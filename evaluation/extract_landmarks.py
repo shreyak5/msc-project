@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import cv2
 import numpy as np
@@ -13,44 +14,12 @@ from landmark_utils import (
     run_fan,
 )
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from preprocessing.io import load_frames  # noqa: E402
+
 # TODO - point this to an assets folder in project root
 DEFAULT_MEDIAPIPE_MODEL_PATH = os.path.join(
     os.path.dirname(__file__), '..', 'baselines', 'smirk_experiments', 'assets', 'face_landmarker.task')
-
-
-def is_image_file(filepath):
-    valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif'}
-    return os.path.splitext(filepath)[1].lower() in valid_extensions
-
-
-def load_image_sequence(directory):
-    if not os.path.isdir(directory):
-        raise ValueError(f"Input path '{directory}' is not a directory when --image_seq is True")
-
-    files = sorted([f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))])
-    if not files:
-        raise ValueError(f"No files found in directory '{directory}'")
-
-    non_image_files = [f for f in files if not is_image_file(f)]
-    if non_image_files:
-        raise ValueError(f"Non-image files found in directory: {non_image_files}")
-
-    images = []
-    first_shape = None
-    for filename in files:
-        filepath = os.path.join(directory, filename)
-        image = cv2.imread(filepath)
-        if image is None:
-            raise ValueError(f"Failed to load image: {filepath}")
-
-        if first_shape is None:
-            first_shape = image.shape
-        elif image.shape != first_shape:
-            raise ValueError(f"Image '{filename}' has shape {image.shape}, but expected {first_shape}")
-
-        images.append(image)
-
-    return images
 
 
 def process_frame(frame, face_detector, mediapipe_detector, fan_predictor, scale, crop_size):
@@ -103,24 +72,7 @@ def main():
     mediapipe_detector = build_mediapipe_detector(args.mediapipe_model_path)
     fan_predictor = build_fan_predictor(args.device)
 
-    if args.image_seq:
-        frames = load_image_sequence(args.input_path)
-        video_fps = args.fps
-        input_name = os.path.basename(args.input_path.rstrip('/'))
-    else:
-        cap = cv2.VideoCapture(args.input_path)
-        if not cap.isOpened():
-            raise RuntimeError(f'Error opening video file: {args.input_path}')
-        video_fps = int(cap.get(cv2.CAP_PROP_FPS)) or args.fps
-        input_name = os.path.splitext(os.path.basename(args.input_path))[0]
-
-        frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-        cap.release()
+    frames, video_fps, input_name = load_frames(args.input_path, args.image_seq, args.fps)
 
     vis_writer = None
     if args.vis_path:

@@ -8,6 +8,8 @@ tqdm
 torch==2.6.0
 torchvision==0.21.0
 torchaudio==2.6.0
+timm
+chumpy
 git+https://github.com/ibug-group/face_detection.git
 git+https://github.com/ibug-group/face_alignment.git
 
