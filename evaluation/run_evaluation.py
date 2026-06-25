@@ -6,7 +6,7 @@ import sys
 import cv2
 import numpy as np
 
-from eval_core import build_evaluators, evaluate_clip, METHOD_REGISTRY
+from eval_core import build_evaluators, evaluate_clip, result_keys, METHOD_REGISTRY, LANDMARK_SETS
 from metrics import summarize
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,28 +36,26 @@ def main():
     parser.add_argument('--mediapipe_model_path', type=str, default=DEFAULT_MEDIAPIPE_MODEL_PATH,
                          help='Path to the MediaPipe face_landmarker.task asset')
     parser.add_argument('--method', type=str, default='smirk', choices=sorted(METHOD_REGISTRY.keys()))
-    parser.add_argument('--landmark_sets', type=str, nargs='+', default=['fan', 'mediapipe'],
-                         choices=['fan', 'mediapipe'], help='Which landmark sets to evaluate')
     parser.add_argument('--fan_vis_path', type=str, default=None, help='Optional path to write a FAN overlay video')
     parser.add_argument('--mediapipe_vis_path', type=str, default=None,
                          help='Optional path to write a MediaPipe overlay video')
     parser.add_argument('--output_dir', type=str, default='evaluation/output', help='Directory to save error arrays/summary')
     args = parser.parse_args()
 
-    enabled_sets = set(args.landmark_sets)
+    keys = result_keys()
     vis_paths = {'fan': args.fan_vis_path, 'mediapipe': args.mediapipe_vis_path}
 
-    evaluators = build_evaluators(args.method, args.device, args.crop_size, args.mediapipe_model_path, enabled_sets)
+    evaluators = build_evaluators(args.method, args.device, args.crop_size, args.mediapipe_model_path)
 
     frames, video_fps, input_name = load_frames(args.input_path, args.image_seq, args.fps)
 
     vis_writers = {}
-    for name in enabled_sets:
-        if vis_paths[name]:
+    for name in LANDMARK_SETS:
+        if name in keys and vis_paths.get(name):
             vis_writers[name] = make_vis_writer(vis_paths[name], video_fps, args.crop_size)
             print(f'Saving {name} visualisation video to {os.path.abspath(vis_paths[name])}')
 
-    errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators, enabled_sets, vis_writers)
+    errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators, vis_writers)
 
     for writer in vis_writers.values():
         writer.release()
@@ -66,7 +64,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     summary = {}
-    for name in enabled_sets:
+    for name in keys:
         np.save(os.path.join(out_dir, f'{name}_errors.npy'), errors[name])
         summary[name] = summarize(errors[name])
 

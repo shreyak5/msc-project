@@ -16,8 +16,12 @@ class ReconstructionMethod(ABC):
     def predict(self, cropped_bgr_image):
         """Run the method on a single cropped BGR frame.
 
-        Returns a dict, e.g. {'fan': (68, 2) or None, 'mediapipe': (105, 2) or None},
-        with 2D landmarks in pixel space of the crop.
+        Returns a dict, e.g. {'fan': (68, 2) or None, 'mediapipe': (105, 2) or None,
+        'vertices': (V, 3) or None}, with 2D landmarks in pixel space of the crop and
+        3D mesh vertices in the method's own mesh space. 'vertices' is optional: if a
+        method's predict() omits it, the temporal_smoothness metric just reports no
+        data (NaN) for that method rather than erroring. All keys must come from a
+        single forward pass - do not re-run inference per metric.
         """
 
     def mediapipe_gt_indices(self):

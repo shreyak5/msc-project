@@ -54,15 +54,18 @@ def main():
     # run_evaluation_dataset.py and stored as each row's "<name>_mean". Here we only
     # take the second mean (across all videos' first-means, pooled across every shard) -
     # never a third mean over shard-level summaries.
-    landmark_sets = sorted({name.rsplit('_mean', 1)[0] for name in fieldnames if name.endswith('_mean')})
+    metric_names = sorted({name.rsplit('_mean', 1)[0] for name in fieldnames if name.endswith('_mean')})
     overall_mean = {}
-    for name in landmark_sets:
+    overall_std = {}
+    for name in metric_names:
         means = [float(row[f'{name}_mean']) for row in merged_rows if row[f'{name}_mean'] != '']
         overall_mean[name] = float(np.mean(means)) if means else None
+        overall_std[name] = float(np.std(means)) if means else None
 
     summary = {
         **totals,
         'overall_mean': overall_mean,
+        'overall_std': overall_std,
         'max_shard_elapsed_seconds': max(shard_elapsed_seconds),
         'total_compute_seconds': sum(shard_elapsed_seconds),
     }

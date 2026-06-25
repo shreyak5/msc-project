@@ -13,6 +13,18 @@ def per_frame_euclidean_error(pred_xy, gt_xy):
     return float(np.linalg.norm(pred_xy - gt_xy, axis=-1).mean())
 
 
+def per_frame_vertex_error(vertices_t, vertices_t1):
+    """Mean Euclidean distance between two consecutive frames' 3D mesh vertices.
+
+    Returns np.nan if either side is missing (None or contains NaN).
+    """
+    if vertices_t is None or vertices_t1 is None:
+        return np.nan
+    if np.isnan(vertices_t).any() or np.isnan(vertices_t1).any():
+        return np.nan
+    return float(np.linalg.norm(vertices_t - vertices_t1, axis=-1).mean())
+
+
 def summarize(errors):
     """Aggregate per-frame errors, ignoring NaN (missing-detection) frames."""
     errors = np.asarray(errors, dtype=np.float64)

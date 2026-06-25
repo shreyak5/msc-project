@@ -10,12 +10,27 @@ from landmark_utils import (
     run_mediapipe,
     run_fan,
 )
-from metrics import per_frame_euclidean_error
+from metrics import per_frame_euclidean_error, per_frame_vertex_error
 from methods.smirk_method import SmirkMethod
 
 METHOD_REGISTRY = {
     'smirk': SmirkMethod,
 }
+
+# Edit these lists to change which metrics / landmark sets run.
+METRICS = ['landmark', 'temporal_smoothness']
+# METRICS = ['temporal_smoothness']
+LANDMARK_SETS = ['fan', 'mediapipe']  # only used if 'landmark' in METRICS
+
+
+def result_keys():
+    """Names of the per-frame(-pair) error arrays evaluate_clip() will produce, given METRICS/LANDMARK_SETS."""
+    keys = []
+    if 'landmark' in METRICS:
+        keys.extend(LANDMARK_SETS)
+    if 'temporal_smoothness' in METRICS:
+        keys.append('temporal_smoothness')
+    return keys
 
 
 @dataclass
@@ -27,51 +42,69 @@ class Evaluators:
     mediapipe_gt_indices: object
 
 
-def build_evaluators(method_name, device, crop_size, mediapipe_model_path, enabled_sets):
+def build_evaluators(method_name, device, crop_size, mediapipe_model_path):
     method = METHOD_REGISTRY[method_name]()
     method.setup(device, crop_size=crop_size)
 
     face_detector = build_retinaface_detector(device)
-    fan_predictor = build_fan_predictor(device) if 'fan' in enabled_sets else None
-    mediapipe_detector = build_mediapipe_detector(mediapipe_model_path) if 'mediapipe' in enabled_sets else None
-    mediapipe_gt_indices = method.mediapipe_gt_indices() if 'mediapipe' in enabled_sets else None
+    fan_predictor = build_fan_predictor(device) if 'fan' in LANDMARK_SETS and 'landmark' in METRICS else None
+    mediapipe_detector = build_mediapipe_detector(mediapipe_model_path) \
+        if 'mediapipe' in LANDMARK_SETS and 'landmark' in METRICS else None
+    mediapipe_gt_indices = method.mediapipe_gt_indices() \
+        if 'mediapipe' in LANDMARK_SETS and 'landmark' in METRICS else None
 
     return Evaluators(method, face_detector, fan_predictor, mediapipe_detector, mediapipe_gt_indices)
 
 
-def evaluate_clip(frames, crop_scale, crop_size, evaluators, enabled_sets, vis_writers=None):
+def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
     """Runs the crop -> GT detect -> method.predict -> per-frame error loop over one clip's frames.
 
-    Returns {'fan': np.ndarray, 'mediapipe': np.ndarray} of per-frame errors (NaN where missing),
-    restricted to the sets in enabled_sets.
+    Returns a dict keyed by result_keys(): 'fan'/'mediapipe' arrays have one entry per
+    frame (NaN where missing); 'temporal_smoothness' has one entry per consecutive
+    frame pair (length len(frames) - 1, NaN if either frame in the pair is missing).
     """
     vis_writers = vis_writers or {}
-    errors = {name: [] for name in enabled_sets}
+    landmark_sets = LANDMARK_SETS if 'landmark' in METRICS else []
+    track_mesh = 'temporal_smoothness' in METRICS
+
+    errors = {name: [] for name in landmark_sets}
+    per_frame_vertices = []
 
     for frame in frames:
         cropped, _tform = crop_face(frame, evaluators.face_detector, scale=crop_scale, image_size=crop_size)
 
         if cropped is None:
-            for name in enabled_sets:
+            for name in landmark_sets:
                 errors[name].append(np.nan)
                 if name in vis_writers:
                     vis_writers[name].write(np.zeros((crop_size, crop_size, 3), dtype=np.uint8))
+            if track_mesh:
+                per_frame_vertices.append(None)
             continue
 
         pred = evaluators.method.predict(cropped)
 
-        if 'fan' in enabled_sets:
+        if 'fan' in landmark_sets:
             gt_fan, _scores = run_fan(evaluators.face_detector, evaluators.fan_predictor, cropped)
             errors['fan'].append(per_frame_euclidean_error(pred.get('fan'), gt_fan))
             if 'fan' in vis_writers:
                 vis_writers['fan'].write(_draw_overlay(cropped, gt_fan, pred.get('fan')))
 
-        if 'mediapipe' in enabled_sets:
+        if 'mediapipe' in landmark_sets:
             gt_mp_full = run_mediapipe(evaluators.mediapipe_detector, cropped)
             gt_mp = gt_mp_full[evaluators.mediapipe_gt_indices, :2] if gt_mp_full is not None else None
             errors['mediapipe'].append(per_frame_euclidean_error(pred.get('mediapipe'), gt_mp))
             if 'mediapipe' in vis_writers:
                 vis_writers['mediapipe'].write(_draw_overlay(cropped, gt_mp, pred.get('mediapipe')))
+
+        if track_mesh:
+            per_frame_vertices.append(pred.get('vertices'))
+
+    if track_mesh:
+        errors['temporal_smoothness'] = [
+            per_frame_vertex_error(per_frame_vertices[i - 1], per_frame_vertices[i])
+            for i in range(1, len(per_frame_vertices))
+        ]
 
     return {name: np.array(values, dtype=np.float64) for name, values in errors.items()}
 

@@ -74,6 +74,7 @@ class SmirkMethod(ReconstructionMethod):
         return {
             'fan': fan_pixels[0].cpu().numpy(),
             'mediapipe': mp_pixels[0].cpu().numpy(),
+            'vertices': flame_output['vertices'][0].cpu().numpy(),
         }
 
     def mediapipe_gt_indices(self):

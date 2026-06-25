@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from eval_core import build_evaluators, evaluate_clip, METHOD_REGISTRY
+from eval_core import build_evaluators, evaluate_clip, result_keys, METHOD_REGISTRY
 from metrics import summarize
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,8 +46,6 @@ def main():
     parser.add_argument('--mediapipe_model_path', type=str, default=DEFAULT_MEDIAPIPE_MODEL_PATH,
                          help='Path to the MediaPipe face_landmarker.task asset')
     parser.add_argument('--method', type=str, default='smirk', choices=sorted(METHOD_REGISTRY.keys()))
-    parser.add_argument('--landmark_sets', type=str, nargs='+', default=['fan', 'mediapipe'],
-                         choices=['fan', 'mediapipe'], help='Which landmark sets to evaluate')
     parser.add_argument('--output_dir', type=str, default='evaluation/output_dataset',
                          help='Directory to save results.csv, skipped_videos.txt and summary.json')
     parser.add_argument('--num_shards', type=int, default=1,
@@ -56,14 +54,14 @@ def main():
                          help='Which shard this process handles, in [0, num_shards)')
     args = parser.parse_args()
 
-    enabled_sets = sorted(set(args.landmark_sets))
+    keys = result_keys()
 
     output_dir = args.output_dir
     if args.num_shards > 1:
         output_dir = os.path.join(args.output_dir, f'shard_{args.shard_index}')
     os.makedirs(output_dir, exist_ok=True)
 
-    evaluators = build_evaluators(args.method, args.device, args.crop_size, args.mediapipe_model_path, enabled_sets)
+    evaluators = build_evaluators(args.method, args.device, args.crop_size, args.mediapipe_model_path)
 
     all_clips = list_clips(args.input_dir, args.image_seq)
     clips = all_clips[args.shard_index::args.num_shards]
@@ -73,10 +71,10 @@ def main():
     results_path = os.path.join(output_dir, 'results.csv')
     skipped_path = os.path.join(output_dir, 'skipped_videos.txt')
 
-    fieldnames = ['name'] + [f'{name}_mean' for name in enabled_sets] + \
-        [f'{name}_valid_frames' for name in enabled_sets] + [f'{name}_total_frames' for name in enabled_sets]
+    fieldnames = ['name'] + [f'{name}_mean' for name in keys] + [f'{name}_std' for name in keys] + \
+        [f'{name}_valid_frames' for name in keys] + [f'{name}_total_frames' for name in keys]
 
-    per_set_means = {name: [] for name in enabled_sets}
+    per_set_means = {name: [] for name in keys}
     num_skipped = 0
 
     start_time = time.time()
@@ -93,8 +91,8 @@ def main():
                 frames, _video_fps, _input_name = load_frames(clip_path, args.image_seq, args.fps)
                 if not frames:
                     raise ValueError('no frames found')
-                errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators, enabled_sets)
-                clip_summary = {name_: summarize(errors[name_]) for name_ in enabled_sets}
+                errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators)
+                clip_summary = {name_: summarize(errors[name_]) for name_ in keys}
             except Exception as e:
                 num_skipped += 1
                 print(f'[{i}/{total}] SKIPPED {name}: {e}')
@@ -102,7 +100,7 @@ def main():
                 skipped_file.flush()
                 continue
 
-            if all(clip_summary[name_]['num_valid_frames'] == 0 for name_ in enabled_sets):
+            if all(clip_summary[name_]['num_valid_frames'] == 0 for name_ in keys):
                 num_skipped += 1
                 print(f'[{i}/{total}] SKIPPED {name}: no valid frames detected')
                 skipped_file.write(f'{name}\tno valid frames detected\n')
@@ -111,16 +109,18 @@ def main():
 
             row = {'name': name}
             progress_parts = []
-            for name_ in enabled_sets:
+            for name_ in keys:
                 mean = clip_summary[name_]['mean']
+                std = clip_summary[name_]['std']
                 valid = clip_summary[name_]['num_valid_frames']
                 total_frames = clip_summary[name_]['num_frames']
                 row[f'{name_}_mean'] = mean
+                row[f'{name_}_std'] = std
                 row[f'{name_}_valid_frames'] = valid
                 row[f'{name_}_total_frames'] = total_frames
                 if mean is not None:
                     per_set_means[name_].append(mean)
-                    progress_parts.append(f'{name_}={mean:.2f}px ({valid}/{total_frames})')
+                    progress_parts.append(f'{name_}={mean:.2f} ({valid}/{total_frames})')
                 else:
                     progress_parts.append(f'{name_}=n/a ({valid}/{total_frames})')
 
@@ -130,15 +130,20 @@ def main():
 
     elapsed_seconds = time.time() - start_time
 
-    overall = {
+    overall_mean = {
         name_: (float(np.mean(per_set_means[name_])) if per_set_means[name_] else None)
-        for name_ in enabled_sets
+        for name_ in keys
+    }
+    overall_std = {
+        name_: (float(np.std(per_set_means[name_])) if per_set_means[name_] else None)
+        for name_ in keys
     }
     summary = {
         'num_videos_total': total,
         'num_videos_processed': total - num_skipped,
         'num_videos_skipped': num_skipped,
-        'overall_mean': overall,
+        'overall_mean': overall_mean,
+        'overall_std': overall_std,
         'elapsed_seconds': elapsed_seconds,
     }
     summary_path = os.path.join(output_dir, 'summary.json')
