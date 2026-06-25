@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH --job-name=eval_lmk_how2sign
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/eval_lmk_how2sign_%j.out
+#SBATCH --job-name=eval_how2sign
+#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/eval_how2sign_%j.out
 #SBATCH --nodes=1
 #SBATCH --gpus=4
 #SBATCH --time=10:00:00
