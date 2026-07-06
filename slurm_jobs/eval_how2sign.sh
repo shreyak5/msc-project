@@ -14,7 +14,7 @@ cd "$PROJECT_DIR"
 
 for ((i = 0; i < NUM_SHARDS; i++)); do
   CUDA_VISIBLE_DEVICES=$i .venv/bin/python evaluation/run_evaluation_dataset.py \
-    --input_dir /projects/u6kf/sk3925_datasets/how2sign/test_rgb_front_clips/ \
+    --input_dir /projects/u6kf/sk3925_datasets/sign_datasets/how2sign/test_rgb_front_clips/ \
     --output_dir "$OUTPUT_DIR" \
     --num_shards "$NUM_SHARDS" --shard_index $i &
 done
