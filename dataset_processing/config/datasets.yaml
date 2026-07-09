@@ -3,76 +3,89 @@ datasets:
     manifest: dataset_processing/manifests/celeba.jsonl
     dimensionality: 2d
     modality: image
+    category: 2d_image
     status: done
 
   ffhq:
     manifest: dataset_processing/manifests/ffhq.jsonl
     dimensionality: 2d
     modality: image
+    category: 2d_image
     status: done
 
   bupt_cbface12:
     manifest: dataset_processing/manifests/bupt_cbface12.jsonl
     dimensionality: 2d
     modality: image
+    category: 2d_image
     status: done
 
   afew_va:
     manifest: dataset_processing/manifests/afew_va.jsonl
     dimensionality: 2d
     modality: video
+    category: 2d_video
     status: done
 
   mead:
     manifest: dataset_processing/manifests/mead.jsonl
     dimensionality: 2d
     modality: video
+    category: 2d_video
     status: done
 
   dad_3dheads:
     manifest: dataset_processing/manifests/dad_3dheads.jsonl
     dimensionality: 3d
     modality: image
+    category: 3d_image
     status: done
 
   coma:
     manifest: dataset_processing/manifests/coma.jsonl
     dimensionality: 3d
     modality: video
+    category: 3d_video
     status: done
 
   vocaset:
     manifest: dataset_processing/manifests/vocaset.jsonl
     dimensionality: 3d
     modality: video
+    category: 3d_video
     status: done
 
   famos:
     manifest: dataset_processing/manifests/famos.jsonl
     dimensionality: 3d
     modality: image
+    category: 3d_image
     status: done
 
   headspace:
     manifest: dataset_processing/manifests/headspace.jsonl
     dimensionality: 3d
     modality: image
+    category: 3d_image
     status: done
 
   csl_daily:
     manifest: dataset_processing/manifests/csl_daily.jsonl
     dimensionality: 2d
     modality: video
+    category: 2d_video
     status: done
 
   phoenix2014t:
     manifest: dataset_processing/manifests/phoenix2014t.jsonl
     dimensionality: 2d
     modality: video
+    category: 2d_video
     status: done
 
   how2sign:
     manifest: dataset_processing/manifests/how2sign.jsonl
     dimensionality: 2d
     modality: video
+    category: 2d_video
     status: done

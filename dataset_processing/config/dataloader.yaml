@@ -1,0 +1,31 @@
+seed: 42
+image_size: 224
+crop_scale: 1.4
+crop_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/face_crop_cache
+
+detector:
+  device: cpu
+  threshold: 0.8
+  model_name: mobilenet0.25
+
+categories:
+  2d_image:
+    batch_size: 128
+    max_frames: 1
+    num_workers: 8
+    drop_last: true
+  2d_video:
+    batch_size: 8
+    max_frames: 32
+    num_workers: 8
+    drop_last: true
+  3d_image:
+    batch_size: 128
+    max_frames: 1
+    num_workers: 4
+    drop_last: true
+  3d_video:
+    batch_size: 4
+    max_frames: 32
+    num_workers: 4
+    drop_last: true
