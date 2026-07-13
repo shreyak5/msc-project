@@ -42,3 +42,11 @@ class TTConfig:
     mlp_ratio: float = constants.TT_MLP_RATIO
     m_values: tuple[float, ...] = constants.TT_BIAS_M_VALUES
     n_values: tuple[float, ...] = constants.TT_BIAS_N_VALUES
+
+
+@dataclasses.dataclass
+class UNetConfig:
+    in_channels: int = constants.UNET_IN_CHANNELS
+    out_channels: int = constants.UNET_OUT_CHANNELS
+    init_features: int = constants.UNET_INIT_FEATURES
+    res_blocks: int = constants.UNET_RES_BLOCKS

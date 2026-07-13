@@ -47,3 +47,14 @@ TT_WINDOW_SIZE = 11
 #   (2^-1, 2^-2) - see Press et al., "Train Short, Test Long".
 TT_BIAS_M_VALUES: tuple[float, ...] = (6.25, 12.5, 25.0, 50.0)
 TT_BIAS_N_VALUES: tuple[float, ...] = (0.5, 0.25)
+
+# Neural rendering UNet (Sec 2.5). Matches SMIRK's actual trainer instantiation
+# (smirk_trainer.py: SmirkGenerator(in_channels=6, out_channels=3, init_features=32,
+# res_blocks=5)), not SmirkGenerator's own class defaults (3/1/16/3). Input is the
+# renderer's shaded mesh image (3 channels, visually grayscale - uniform albedo x
+# shading - but stored 3-channel) concatenated with the masked 3-channel RGB image
+# (~1% of real face pixels retained, Sec 2.5); output is the full RGB reconstruction.
+UNET_IN_CHANNELS = 6
+UNET_OUT_CHANNELS = 3
+UNET_INIT_FEATURES = 32
+UNET_RES_BLOCKS = 5
