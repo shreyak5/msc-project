@@ -38,10 +38,17 @@ def get_cropped_face(
     scale: float,
     image_size: int,
     on_noface: Callable[[], None] | None = None,
+    on_error: Callable[[str], None] | None = None,
 ) -> np.ndarray:
     key_path = _cache_key_path(Path(cache_root), dataset, sample_id, frame_index)
     png_path = key_path.with_suffix(".png")
     noface_path = key_path.with_suffix(".noface")
+    unreadable_path = key_path.with_suffix(".unreadable")
+
+    if unreadable_path.exists():
+        if on_error is not None:
+            on_error("previously found unreadable")
+        return np.zeros((image_size, image_size, 3), dtype=np.uint8)
 
     if noface_path.exists():
         if on_noface is not None:
@@ -53,10 +60,21 @@ def get_cropped_face(
         if crop is not None:
             return crop
 
+    # A source frame that genuinely can't be read (e.g. a corrupted/missing individual
+    # frame image) shouldn't crash the whole dataset/training run over one bad file -
+    # degrade the same way "no face detected" does, but track it separately (a distinct
+    # sentinel + callback) so it stays distinguishable from a legitimate no-face case.
+    try:
+        image = load_source_image()
+    except Exception as exc:
+        _atomic_write_bytes(unreadable_path, b"")
+        if on_error is not None:
+            on_error(str(exc))
+        return np.zeros((image_size, image_size, 3), dtype=np.uint8)
+
     # Only reached on an actual cache miss - this is the sole place the detector is
     # constructed (lazily, on first real miss in this worker process), so a fully
     # prewarmed cache never pays the detector-construction cost at all.
-    image = load_source_image()
     crop, _ = crop_face(image, get_detector(), scale=scale, image_size=image_size)
 
     if crop is None:

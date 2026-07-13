@@ -70,7 +70,11 @@ def main():
                 frame_indices = [None] if is_image else range(num_frames)
 
                 for frame_index in frame_indices:
-                    source_path = row.image_paths[0]
+                    if is_image or len(row.image_paths) == 1:
+                        source_path = row.image_paths[0]
+                    else:
+                        source_path = row.image_paths[frame_index]
+
                     if is_image:
                         load_image = lambda p=source_path: cv2.imread(p)
                     else:
@@ -79,17 +83,21 @@ def main():
                     def on_noface(ds=entry.name, sid=row.sample_id, fi=frame_index, sp=source_path):
                         log_writer.writerow([ds, sid, fi if fi is not None else "", sp, "no_face_detected"])
 
+                    def on_error(reason, ds=entry.name, sid=row.sample_id, fi=frame_index, sp=source_path):
+                        log_writer.writerow([ds, sid, fi if fi is not None else "", sp, f"error: {reason}"])
+
                     try:
                         get_cropped_face(
                             cfg.crop_cache_root, entry.name, row.sample_id, frame_index,
                             load_image, get_prewarm_detector, cfg.crop_scale, cfg.image_size,
-                            on_noface=on_noface,
+                            on_noface=on_noface, on_error=on_error,
                         )
                     except Exception as exc:
-                        log_writer.writerow([
-                            entry.name, row.sample_id, frame_index if frame_index is not None else "",
-                            source_path, f"error: {exc}",
-                        ])
+                        # Defense-in-depth for anything unexpected that get_cropped_face's
+                        # own on_error path doesn't already cover (e.g. a disk write
+                        # failure) - the unreadable-source-image case is now handled by
+                        # on_error above and never reaches here.
+                        on_error(str(exc))
 
                 if source is not None:
                     source.close()
