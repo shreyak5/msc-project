@@ -90,7 +90,9 @@ bias(i, j, h) = m_h * s̃_j − n_h * |i − j|
 
 - `s̃_j` = normalized visibility score of the **key** frame (attend more to reliable frames).
 - `|i − j|` = temporal distance, penalized (ALiBi-style, negative slope).
-- `m_h`, `n_h`: **fixed** per-head constants (not learned), chosen in a geometric-series style as in ALiBi so heads span a range of (m, n) combinations. Magnitude guidance: with mean-subtracted scores in roughly [−0.1, 0.1] and distances in [−5, 5], set **m ≈ 10× n** so both terms contribute comparably.
+- `m_h`, `n_h`: **fixed** per-head constants (not learned). Heads span a genuine **grid** of (m, n) combinations rather than a single m = k·n line: 4 m-values × 2 n-values = 8 heads (one (m, n) pair per head, all combinations covered). Both are geometric series:
+  - `m ∈ {6.25, 12.5, 25, 50}` — spans up to ~50 so that an extreme score deviation (s̃ ≈ 0.1) can dominate over a typical distance penalty even at the grid's low end (with mean-subtracted scores in roughly [−0.1, 0.1] and distances in [−5, 5]).
+  - `n ∈ {0.5, 0.25}` — ALiBi's own first two slopes from its standard 8-head geometric sequence (2⁻¹, 2⁻²; see Press et al., "Train Short, Test Long").
 - All 4 component tokens of frame j receive the same frame-level score; attention is full joint attention over all 4 tokens × w frames within the window (component tokens carry component-type embeddings so the TT can distinguish them; temporal order is conveyed solely via the distance bias).
 
 ---
