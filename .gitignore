@@ -5,3 +5,4 @@ output/
 output_dataset/
 assets/
 dataset_processing/manifests/
+pretrained_weights/
