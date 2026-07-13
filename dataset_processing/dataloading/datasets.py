@@ -30,6 +30,32 @@ def _crop_to_tensor(crop_bgr: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
 
 
+def _rows_with_frame_counts(
+    dataset_name: str, manifest_path: str | Path, split: str, crop_cache_root: str | Path,
+) -> list[tuple[ManifestRow, int]]:
+    """Reads manifest rows for `split` and resolves each row's true frame count (from a
+    prewarm-built cache, falling back to a live probe only if that's missing - see
+    VideoFaceDataset for why the cache matters at scale). Rows whose video can't be
+    opened at all are skipped rather than crashing the whole dataset over one bad file."""
+    rows = [row for row in read_manifest(manifest_path) if row.split == split]
+    cached_counts = load_frame_counts(crop_cache_root, dataset_name) or {}
+    result: list[tuple[ManifestRow, int]] = []
+    for row in rows:
+        num_frames_total = cached_counts.get(row.sample_id)
+        if num_frames_total is None:
+            try:
+                source = make_frame_source(row.image_paths)
+                num_frames_total = source.num_frames()
+                source.close()
+            except Exception as exc:
+                # A single unreadable/corrupted video shouldn't take down the whole
+                # dataset - skip it.
+                print(f"warning: skipping unreadable {dataset_name}/{row.sample_id}: {exc}")
+                continue
+        result.append((row, num_frames_total))
+    return result
+
+
 class ImageFaceDataset(Dataset):
     def __init__(
         self,
@@ -104,30 +130,13 @@ class VideoFaceDataset(Dataset):
         self.with_flame = with_flame
         self.max_frames = max_frames
 
-        rows = [row for row in read_manifest(manifest_path) if row.split == split]
-        # len(row.image_paths) is only the true frame count for the pre-extracted
-        # frame-list representation; for a single video file it's always 1, so the actual
-        # frame count must come from a prewarm-built cache, or - only if that's missing -
-        # a live probe (opening tens of thousands of videos here would otherwise make
-        # constructing this Dataset take minutes, every time, on every DDP rank).
-        cached_counts = load_frame_counts(crop_cache_root, dataset_name) or {}
-        # Each index entry carries the row's true frame count alongside it, computed once
-        # here, so __getitem__ never needs to (incorrectly) re-derive it from
-        # len(row.image_paths) - which is only accurate for the frame-list representation,
-        # not for a single video file.
+        # Each index entry carries the row's true frame count alongside it (resolved by
+        # _rows_with_frame_counts, from a prewarm-built cache or a live probe - never
+        # from len(row.image_paths), which is only accurate for the pre-extracted
+        # frame-list representation, not for a single video file), so __getitem__ never
+        # needs to re-derive it.
         self.index: list[tuple[ManifestRow, int, int]] = []
-        for row in rows:
-            num_frames_total = cached_counts.get(row.sample_id)
-            if num_frames_total is None:
-                try:
-                    source = make_frame_source(row.image_paths)
-                    num_frames_total = source.num_frames()
-                    source.close()
-                except Exception as exc:
-                    # A single unreadable/corrupted video (e.g. a truncated .mp4 missing
-                    # its trailer) shouldn't take down the whole dataset - skip it.
-                    print(f"warning: skipping unreadable {dataset_name}/{row.sample_id}: {exc}")
-                    continue
+        for row, num_frames_total in _rows_with_frame_counts(dataset_name, manifest_path, split, crop_cache_root):
             for start in segment_starts(num_frames_total, max_frames):
                 self.index.append((row, start, num_frames_total))
 
@@ -163,6 +172,73 @@ class VideoFaceDataset(Dataset):
         }
         if self.with_flame:
             item["flame_vertices"] = torch.stack(meshes, dim=0)
+        return item
+
+
+class FramePoolVideoDataset(Dataset):
+    """Treats a video dataset as a pool of individual frames rather than clips: one
+    dataset entry per video, and each access draws a freshly re-sampled random frame
+    (implementation-plan.md Sec 5.2 - used whenever TT is frozen, so video datasets can
+    mix into the same "2D-loss"/"3D-loss" image batches as real images, like SMIRK's
+    own image-level passes). Re-sampled every __getitem__ call, not fixed once per
+    video, so a long training run eventually covers most of a video's frames rather
+    than just the one frame picked at construction time.
+
+    Uses torch.randint for the frame choice - PyTorch's DataLoader automatically
+    reseeds per-worker-process RNG state (verified empirically for this environment:
+    torch, Python's stdlib random, and numpy's global RNG all diverge correctly across
+    worker processes without a custom worker_init_fn)."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        manifest_path: str | Path,
+        split: str,
+        crop_cache_root: str | Path,
+        image_size: int,
+        crop_scale: float,
+        detector_device: str,
+        detector_threshold: float,
+        detector_model_name: str,
+        with_flame: bool,
+    ):
+        self.dataset_name = dataset_name
+        self.crop_cache_root = Path(crop_cache_root)
+        self.image_size = image_size
+        self.crop_scale = crop_scale
+        self.detector_device = detector_device
+        self.detector_threshold = detector_threshold
+        self.detector_model_name = detector_model_name
+        self.with_flame = with_flame
+
+        self.rows_with_counts = _rows_with_frame_counts(dataset_name, manifest_path, split, crop_cache_root)
+
+    def __len__(self) -> int:
+        return len(self.rows_with_counts)
+
+    def _get_detector(self):
+        return get_detector(self.detector_device, self.detector_threshold, self.detector_model_name)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        row, num_frames_total = self.rows_with_counts[index]
+        frame_idx = int(torch.randint(0, num_frames_total, (1,)).item())
+        source = make_frame_source(row.image_paths)
+
+        crop = get_cropped_face(
+            self.crop_cache_root, self.dataset_name, row.sample_id, frame_idx,
+            lambda: source.read_frame(frame_idx),
+            self._get_detector,
+            self.crop_scale, self.image_size,
+        )
+        source.close()
+
+        item: dict[str, Any] = {
+            "dataset": self.dataset_name,
+            "subject_id": row.subject_id,
+            "pixel_values": _crop_to_tensor(crop),
+        }
+        if self.with_flame:
+            item["flame_vertices"] = load_flame_vertices(row.flame_mesh_paths[frame_idx])
         return item
 
 

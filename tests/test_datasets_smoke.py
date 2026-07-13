@@ -12,7 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_processing.dataloading import datasets as datasets_module  # noqa: E402
 from dataset_processing.dataloading.combined_loader import build_combined_loader  # noqa: E402
 from dataset_processing.dataloading.config import CategoryConfig, DataloaderConfig, DetectorConfig  # noqa: E402
-from dataset_processing.dataloading.datasets import ImageFaceDataset, VideoFaceDataset  # noqa: E402
+from dataset_processing.dataloading.datasets import (  # noqa: E402
+    FramePoolVideoDataset,
+    ImageFaceDataset,
+    VideoFaceDataset,
+)
 
 
 class _NoFaceDetector:
@@ -294,3 +298,99 @@ def test_ddp_sampler_length_consistent_across_ranks(tmp_path, monkeypatch):
     # Every rank must independently compute the same epoch length, or a real 16-GPU DDP
     # job would deadlock (some ranks finishing their collective ops before others).
     assert len(loader_rank0) == len(loader_rank1)
+
+
+def test_frame_pool_dataset_one_entry_per_video_not_per_frame(tmp_path, monkeypatch):
+    frame_paths = []
+    for i in range(20):
+        p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(p)
+        frame_paths.append(str(p))
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [_base_row(
+        sample_id="clip0", modality="video", image_paths=frame_paths,
+    )])
+
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    ds = FramePoolVideoDataset(
+        "test_framepool_dataset", manifest_path, "train", tmp_path / "cache",
+        image_size=224, crop_scale=1.4, detector_device="cpu",
+        detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
+    )
+    # One video, 20 frames - a frame pool has exactly one entry (unlike VideoFaceDataset,
+    # which would split this into ceil(20/max_frames) segments).
+    assert len(ds) == 1
+
+    item = ds[0]
+    assert set(item.keys()) == {"dataset", "subject_id", "pixel_values"}
+    assert item["pixel_values"].shape == (3, 224, 224)
+
+
+def test_frame_pool_dataset_resamples_a_different_frame_across_accesses(tmp_path, monkeypatch):
+    frame_paths = []
+    for i in range(20):
+        p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(p)
+        frame_paths.append(str(p))
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [_base_row(
+        sample_id="clip0", modality="video", image_paths=frame_paths,
+    )])
+
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    requested_frame_indices = []
+
+    def fake_get_cropped_face(cache_root, dataset, sample_id, frame_index, load_source_image,
+                               get_detector_fn, scale, image_size, on_noface=None):
+        requested_frame_indices.append(frame_index)
+        return np.zeros((image_size, image_size, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(datasets_module, "get_cropped_face", fake_get_cropped_face)
+
+    ds = FramePoolVideoDataset(
+        "test_framepool_dataset", manifest_path, "train", tmp_path / "cache",
+        image_size=224, crop_scale=1.4, detector_device="cpu",
+        detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
+    )
+
+    for _ in range(30):
+        ds[0]
+
+    # With 20 possible frames and 30 draws, seeing only a single repeated value would be
+    # astronomically unlikely if re-sampling is actually happening on every access.
+    assert len(set(requested_frame_indices)) > 1
+    assert all(0 <= idx < 20 for idx in requested_frame_indices)
+
+
+def test_frame_pool_dataset_loads_flame_mesh_for_the_sampled_frame(tmp_path, monkeypatch):
+    frame_paths = []
+    mesh_paths = []
+    for i in range(5):
+        img_p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(img_p)
+        frame_paths.append(str(img_p))
+        mesh_p = tmp_path / "source" / f"mesh_{i:03d}.json"
+        _write_dummy_flame_json(mesh_p)
+        mesh_paths.append(str(mesh_p))
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [_base_row(
+        sample_id="clip0", dimensionality="3d", modality="video",
+        image_paths=frame_paths, flame_mesh_paths=mesh_paths,
+    )])
+
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    ds = FramePoolVideoDataset(
+        "test_framepool_3d_dataset", manifest_path, "train", tmp_path / "cache",
+        image_size=224, crop_scale=1.4, detector_device="cpu",
+        detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=True,
+    )
+
+    item = ds[0]
+    assert set(item.keys()) == {"dataset", "subject_id", "pixel_values", "flame_vertices"}
+    assert item["flame_vertices"].shape == (5023, 3)

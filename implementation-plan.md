@@ -115,11 +115,12 @@ bias(i, j, h) = m_h * s̃_j − n_h * |i − j|
 - 3D datasets are stored as (2D image, FLAME-registered 3D mesh) pairs. All listed 3D datasets are already in FLAME topology — no registration/conversion work required.
 
 ### 5.2 Batching
-- **Homogeneous batches** — each batch contains exactly one data type; different types follow different loss paths.
-- Batch types are sampled with fixed ratios (hyperparameters). Starting points:
-  - Image-level passes: ~40/60 weighting between 2D-loss and 3D-loss batches (TokenFace's tuned λ2D = 0.4, λ3D = 0.6), with expression-rich 2D data (MEAD frames, sign language frames) up-weighted within the 2D pool.
-  - Temporal pass: sign language ≈ 60%, other 2D video ≈ 20%, 3D video ≈ 20%.
-- In image-level passes, video datasets contribute **randomly sampled individual frames** (as in SMIRK).
+- **Homogeneous per-category batches, combined jointly every step** — each training step draws one batch from *every* category simultaneously (via a shared combined loader; the smaller categories cycle/repeat to keep pace with the largest), rather than stochastically picking a single category per step. Relative influence between data types is controlled by **loss-weight hyperparameters** (Sec 6), not by sampling probability — kept as tunable config, no fixed ratio prescribed here. This also means the epoch length is set by the largest category, so smaller-but-valuable categories (3D data is scarce) are seen proportionally *more* often per epoch, not less.
+  - Within the 2D pool, expression-rich data (MEAD frames, sign language frames) is up-weighted relative to plain face datasets (CelebA/FFHQ/BUPT) - exact weighting is a tunable config knob.
+  - Temporal pass category composition (sign language / other 2D video / 3D video) is likewise a tunable per-category batch-size/weight config, not a fixed prescribed split.
+- **Video datasets switch between two modes depending on whether TT is being trained in the current pass:**
+  - **TT frozen** (Stage 1; Stage 2 Pass A/B): video datasets contribute **randomly sampled individual frames** (as in SMIRK) — one fresh random frame per access, so a batch of "2D-loss" or "3D-loss" samples can mix real images and single video frames interchangeably. Re-sampled every access (not fixed once per video), so a long training run eventually covers most of a video's frames, not just one.
+  - **TT training** (Stage 2 Pass C, the temporal pass): video datasets contribute **full clips** (all frames in the window), since TT needs a genuine temporal sequence to operate on.
 
 ### 5.3 Other preprocessing
 - 2D landmarks: as in SMIRK — MediaPipe (face interior, 92 pts) + FAN (16 boundary pts), precomputed.
