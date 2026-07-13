@@ -20,14 +20,6 @@ _EXPECTED_UNINITIALIZED_KEYS = {
     "component_tokens.expression",
     "component_tokens.jaw",
     "component_tokens.camera",
-    "heads.shape.linear.weight",
-    "heads.shape.linear.bias",
-    "heads.expression.linear.weight",
-    "heads.expression.linear.bias",
-    "heads.jaw.linear.weight",
-    "heads.jaw.linear.bias",
-    "heads.camera.linear.weight",
-    "heads.camera.linear.bias",
 }
 
 
@@ -49,7 +41,7 @@ def test_load_farl_pretrained_changes_weights_and_still_runs():
 
 
 @pytest.mark.skipif(not os.path.exists(_CHECKPOINT), reason="FaRL checkpoint not downloaded")
-def test_load_farl_pretrained_only_leaves_component_tokens_and_heads_uninitialized():
+def test_load_farl_pretrained_only_leaves_component_tokens_uninitialized():
     model = SViT()
 
     result = load_farl_pretrained(model, _CHECKPOINT)

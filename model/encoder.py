@@ -22,7 +22,6 @@ import torch
 import torch.nn as nn
 from timm.layers import PatchEmbed
 
-from model import constants
 from model.config import COMPONENT_TOKENS, SViTConfig
 
 
@@ -88,34 +87,15 @@ class ResidualAttentionBlock(nn.Module):
         return x
 
 
-class ComponentHead(nn.Module):
-    """Single-layer MLP mapping a component token's 768-dim feature to its FLAME/camera
-    parameter group. For the expression head, the trailing NUM_EYELID_PARAMS outputs are
-    passed through a sigmoid (eyelid blendshapes are in [0, 1]; sigmoid keeps gradients
-    alive at the boundary, unlike a hard clamp - implementation-plan.md Sec 2.2)."""
-
-    def __init__(self, embed_dim: int, param_dim: int, name: str):
-        super().__init__()
-        self.name = name
-        self.linear = nn.Linear(embed_dim, param_dim)
-        if name == "expression":
-            self._eyelid_start = param_dim - constants.NUM_EYELID_PARAMS
-        else:
-            self._eyelid_start = None
-
-    def forward(self, token: torch.Tensor) -> torch.Tensor:
-        out = self.linear(token)
-        if self._eyelid_start is not None:
-            expr = out[..., : self._eyelid_start]
-            eyelids = torch.sigmoid(out[..., self._eyelid_start :])
-            out = torch.cat([expr, eyelids], dim=-1)
-        return out
-
-
 class SViT(nn.Module):
     """ViT-B/16 spatial encoder with 4 learnable component tokens appended to the
     patch token sequence. Only the component tokens' post-final-layer features are
-    returned; image patch tokens are discarded (TokenFace design, Sec 2.1)."""
+    returned; image patch tokens are discarded (TokenFace design, Sec 2.1).
+
+    Returns raw 768-dim features, not decoded FLAME/camera parameters: the per-token
+    MLP heads (model.heads.ComponentHeads) are a separate module, shared by both the
+    single-image path (SViT -> Heads) and the video path (SViT -> TT -> Heads, Sec 3),
+    so they aren't owned by SViT itself."""
 
     def __init__(self, config: SViTConfig | None = None):
         super().__init__()
@@ -156,11 +136,7 @@ class SViT(nn.Module):
         )
         self.norm = LayerNormFp32(cfg.embed_dim)
 
-        self.heads = nn.ModuleDict(
-            {t.name: ComponentHead(cfg.embed_dim, t.param_dim, t.name) for t in COMPONENT_TOKENS}
-        )
-
-    def forward_features(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """images: (B, 3, H, W) -> dict[component_name] -> (B, embed_dim) token feature,
         i.e. the component tokens after the final transformer layer, pre-MLP-head."""
         batch_size = images.shape[0]
@@ -180,9 +156,3 @@ class SViT(nn.Module):
         num_component = len(self.component_names)
         component_out = x[:, -num_component:, :]
         return {name: component_out[:, i, :] for i, name in enumerate(self.component_names)}
-
-    def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
-        """images: (B, 3, H, W) -> dict[component_name] -> (B, param_dim) decoded
-        FLAME/camera parameters (see model.config.COMPONENT_TOKENS for dims)."""
-        features = self.forward_features(images)
-        return {name: self.heads[name](feat) for name, feat in features.items()}

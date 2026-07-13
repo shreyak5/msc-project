@@ -31,6 +31,19 @@ SVIT_MLP_RATIO = 4.0
 TT_EMBED_DIM = 768
 TT_DEPTH = 3
 TT_NUM_HEADS = 8
+# Not specified by the plan (only dim/depth/heads are); using the same standard
+# ViT-style expansion ratio as SVIT_MLP_RATIO.
+TT_MLP_RATIO = 4.0
 
 # Attention bias window (Sec 4.2)
 TT_WINDOW_SIZE = 11
+
+# Attention bias (Sec 4.4): bias(i,j,h) = m_h * s_tilde_j - n_h * |i-j|. Heads span a
+# genuine grid of (m, n) combinations (not a single m=k*n line): 4 m-values x 2
+# n-values = 8 heads (TT_NUM_HEADS). Both are geometric series:
+# - m: spans up to ~50, so that an extreme score deviation (s_tilde ~ 0.1) can
+#   dominate over a typical distance penalty even at the grid's low end.
+# - n: ALiBi's own first two slopes from its standard 8-head geometric sequence
+#   (2^-1, 2^-2) - see Press et al., "Train Short, Test Long".
+TT_BIAS_M_VALUES: tuple[float, ...] = (6.25, 12.5, 25.0, 50.0)
+TT_BIAS_N_VALUES: tuple[float, ...] = (0.5, 0.25)

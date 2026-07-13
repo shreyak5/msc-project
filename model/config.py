@@ -32,3 +32,13 @@ class SViTConfig:
     num_heads: int = constants.SVIT_NUM_HEADS
     mlp_ratio: float = constants.SVIT_MLP_RATIO
     qkv_bias: bool = True
+
+
+@dataclasses.dataclass
+class TTConfig:
+    dim: int = constants.TT_EMBED_DIM
+    depth: int = constants.TT_DEPTH
+    num_heads: int = constants.TT_NUM_HEADS
+    mlp_ratio: float = constants.TT_MLP_RATIO
+    m_values: tuple[float, ...] = constants.TT_BIAS_M_VALUES
+    n_values: tuple[float, ...] = constants.TT_BIAS_N_VALUES
