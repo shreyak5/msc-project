@@ -6,16 +6,31 @@ FLAME_EXPRESSION_DIM = 100
 NUM_EYELID_PARAMS = 2
 FLAME_JAW_POSE_DIM = 3
 
-# Camera + global rotation (Sec 2.2): 1 scale + 3 global rotation + 3 translation
+# Camera + global rotation (Sec 2.2): weak-perspective/orthographic camera, matching
+# SMIRK's reused renderer exactly (renderer/util.py's batch_orth_proj expects
+# [scale, tx, ty] - no depth/tz term; SMIRK's own PoseEncoder/FLAME split is the same
+# 1 scale + 2D translation + 3D FLAME global rotation, just produced by two separate
+# sub-networks there instead of one token). No tz: for a small, roughly fronto-parallel
+# object like a cropped face, depth-translation and scale are largely redundant/
+# degenerate from monocular RGB alone (moving closer vs. scaling up look the same),
+# so the standard convention in this line of work (DECA/EMOCA/SMIRK) keeps only scale.
 CAMERA_SCALE_DIM = 1
 GLOBAL_ROTATION_DIM = 3
-TRANSLATION_DIM = 3
+TRANSLATION_DIM = 2
 
 # Component token parameter-group dims (output of each per-token MLP head, Sec 2.2/2.3)
 SHAPE_TOKEN_DIM = FLAME_SHAPE_DIM
 EXPRESSION_TOKEN_DIM = FLAME_EXPRESSION_DIM + NUM_EYELID_PARAMS
 JAW_TOKEN_DIM = FLAME_JAW_POSE_DIM
 CAMERA_TOKEN_DIM = CAMERA_SCALE_DIM + GLOBAL_ROTATION_DIM + TRANSLATION_DIM
+
+# Camera token layout: [scale(1), global_rotation_axis_angle(3), translation_xy(2)],
+# in that order. global_rotation feeds FLAME's kinematic root joint (model/flame.py);
+# scale + translation_xy feed the renderer's weak-perspective projection - FLAME
+# itself never sees scale/translation.
+CAMERA_SCALE_SLICE = slice(0, CAMERA_SCALE_DIM)
+CAMERA_ROTATION_SLICE = slice(CAMERA_SCALE_DIM, CAMERA_SCALE_DIM + GLOBAL_ROTATION_DIM)
+CAMERA_TRANSLATION_SLICE = slice(CAMERA_SCALE_DIM + GLOBAL_ROTATION_DIM, CAMERA_TOKEN_DIM)
 
 NUM_COMPONENT_TOKENS = 4
 
@@ -58,3 +73,11 @@ UNET_IN_CHANNELS = 6
 UNET_OUT_CHANNELS = 3
 UNET_INIT_FEATURES = 32
 UNET_RES_BLOCKS = 5
+
+# FLAME model assets (model/flame.py), paths relative to the repo root.
+FLAME_MODEL_PATH = "assets/FLAME2020/generic_model.pkl"
+FLAME_LMK_EMBEDDING_PATH = "assets/landmark_embedding.npy"
+FLAME_MEDIAPIPE_LMK_EMBEDDING_PATH = "assets/mediapipe_landmark_embedding/mediapipe_landmark_embedding.npz"
+FLAME_L_EYELID_PATH = "assets/l_eyelid.npy"
+FLAME_R_EYELID_PATH = "assets/r_eyelid.npy"
+EXPECTED_NUM_FLAME_VERTICES = 5023

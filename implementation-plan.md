@@ -36,7 +36,7 @@ Five trainable component groups.
 | Shape | FLAME shape β | 300 |
 | Expression | FLAME expression ψ + 2 eyelid blendshapes | 100 + 2 |
 | Jaw | jaw pose θjaw | 3 |
-| Camera + global rotation | 1 scale + 3 global rotation + 3 translation | 7 |
+| Camera + global rotation | 1 scale + 3 global rotation + 2D translation (weak-perspective/orthographic, matching SMIRK's reused renderer - no depth/tz term) | 6 |
 
 - Eyelid blendshapes: as in SMIRK, values in [0, 1] (0 = open, 1 = closed). Implement the constraint with a **sigmoid** on the MLP output (not a hard clamp — clamping kills gradients at the boundary).
 - No texture or lighting tokens: the neural renderer receives sparsely sampled input pixels and infers appearance itself (SMIRK design).
