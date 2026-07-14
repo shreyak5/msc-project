@@ -1,20 +1,3 @@
-import os
-import sys
-
-import numpy as np
-import cv2
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from preprocessing.cropping import (  # noqa: F401,E402 (re-exported for compatibility)
-    build_retinaface_detector,
-    get_face_box,
-    get_crop_transform,
-    warp_crop,
-    crop_face,
-)
-
-
 def build_mediapipe_detector(model_asset_path):
     from mediapipe.tasks import python
     from mediapipe.tasks.python import vision
@@ -31,7 +14,9 @@ def build_mediapipe_detector(model_asset_path):
 
 
 def run_mediapipe(detector, image):
+    import cv2
     import mediapipe as mp
+    import numpy as np
 
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
@@ -57,13 +42,17 @@ def build_fan_predictor(device, model_name='2dfan4'):
     return FANPredictor(device=device, model=FANPredictor.get_model(model_name))
 
 
-def run_fan(face_detector, fan_predictor, image):
-    detected_faces = face_detector(image, rgb=False)
-    if detected_faces is None or len(detected_faces) == 0:
-        return None, None
-
-    landmarks, scores = fan_predictor(image, detected_faces, rgb=False)
+def run_fan(fan_predictor, image, box):
+    """box: (4,) [left, top, right, bottom] - the face's box within `image`. No
+    face_detector here: callers operating on an already-cropped image (via
+    preprocessing.cropping.crop_face) should pass preprocessing.cropping.
+    get_cropped_face_box(image_size, scale)'s fixed, analytically-derived box
+    rather than re-detecting - see that function's docstring for why re-
+    detection would be redundant. FAN itself has no "no face" failure mode
+    once given a box (unlike the old detector-based version) - it will always
+    attempt to produce landmarks for whatever box it's given."""
+    import numpy as np
+    landmarks, scores = fan_predictor(image, np.asarray(box), rgb=False)
     if len(landmarks) == 0:
         return None, None
-
     return landmarks[0], scores[0]

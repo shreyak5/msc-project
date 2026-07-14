@@ -5,17 +5,10 @@ import sys
 import cv2
 import numpy as np
 
-from landmark_utils import (
-    build_retinaface_detector,
-    build_mediapipe_detector,
-    build_fan_predictor,
-    crop_face,
-    run_mediapipe,
-    run_fan,
-)
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from preprocessing.cropping import build_retinaface_detector, crop_face, get_cropped_face_box  # noqa: E402
 from preprocessing.io import load_frames  # noqa: E402
+from utils.landmark_utils import build_mediapipe_detector, build_fan_predictor, run_mediapipe, run_fan  # noqa: E402
 
 # TODO - point this to an assets folder in project root
 DEFAULT_MEDIAPIPE_MODEL_PATH = os.path.join(
@@ -27,7 +20,7 @@ def process_frame(frame, face_detector, mediapipe_detector, fan_predictor, scale
 
     # Number of mediapipe landmarks = 478, fan landmarks = 68
     if cropped is None:
-        mp_lmks = np.full((478, 3), np.nan, dtype=np.float32) 
+        mp_lmks = np.full((478, 3), np.nan, dtype=np.float32)
         fan_lmks = np.full((68, 2), np.nan, dtype=np.float32)
         # fan_scores = np.full((68,), np.nan, dtype=np.float32)
         return None, mp_lmks, fan_lmks
@@ -36,7 +29,10 @@ def process_frame(frame, face_detector, mediapipe_detector, fan_predictor, scale
     if mp_lmks is None:
         mp_lmks = np.full((478, 3), np.nan, dtype=np.float32)
 
-    fan_lmks, _fan_scores = run_fan(face_detector, fan_predictor, cropped)
+    # Fixed given scale/crop_size (see get_cropped_face_box's docstring) - no second,
+    # redundant RetinaFace call on the already-cropped image just to get FAN a box.
+    fan_box = get_cropped_face_box(image_size=crop_size, scale=scale)
+    fan_lmks, _fan_scores = run_fan(fan_predictor, cropped, fan_box)
     if fan_lmks is None:
         fan_lmks = np.full((68, 2), np.nan, dtype=np.float32)
         # fan_scores = np.full((68,), np.nan, dtype=np.float32)

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from torch.utils.data import ConcatDataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from dataset_processing.dataloading.config import DataloaderConfig
 from dataset_processing.dataloading.datasets import build_category_dataset
+from dataset_processing.dataloading.identity_batch_sampler import IdentityAwareBatchSampler
 from dataset_processing.dataloading.registry import (
     DEFAULT_DATASETS_YAML,
     datasets_by_category,
@@ -35,7 +36,7 @@ class CombinedFaceLoader:
     def __init__(
         self,
         category_loaders: dict[str, DataLoader],
-        category_samplers: dict[str, DistributedSampler],
+        category_samplers: dict[str, DistributedSampler | IdentityAwareBatchSampler],
     ):
         self.category_loaders = category_loaders
         self.category_samplers = category_samplers
@@ -58,27 +59,57 @@ def build_combined_loader(
     rank: int,
     world_size: int,
     datasets_yaml_path: str | Path = DEFAULT_DATASETS_YAML,
+    video_mode: Literal["frame_pool", "clip"] = "clip",
 ) -> CombinedFaceLoader:
+    """video_mode: see build_category_dataset's docstring - applies to every video
+    category in this loader uniformly (Sec 5.2's single global per-pass switch),
+    not chosen independently per category."""
     entries = load_datasets_yaml(datasets_yaml_path)
     by_category = datasets_by_category(entries)
 
     category_loaders: dict[str, DataLoader] = {}
-    category_samplers: dict[str, DistributedSampler] = {}
+    category_samplers: dict[str, DistributedSampler | IdentityAwareBatchSampler] = {}
     for category in CATEGORIES:
         category_cfg = cfg.categories[category]
-        category_datasets = [build_category_dataset(entry, split, cfg) for entry in by_category[category]]
+        category_datasets = [
+            build_category_dataset(entry, split, cfg, video_mode=video_mode) for entry in by_category[category]
+        ]
         dataset = category_datasets[0] if len(category_datasets) == 1 else ConcatDataset(category_datasets)
 
-        sampler = DistributedSampler(
+        distributed_sampler = DistributedSampler(
             dataset, num_replicas=world_size, rank=rank,
             shuffle=(split == "train"), seed=cfg.seed, drop_last=False,
         )
-        loader = DataLoader(
-            dataset, batch_size=category_cfg.batch_size, sampler=sampler,
-            num_workers=category_cfg.num_workers, drop_last=category_cfg.drop_last,
-            pin_memory=True, persistent_workers=category_cfg.num_workers > 0,
-        )
-        category_loaders[category] = loader
-        category_samplers[category] = sampler
+
+        # IdentityAwareBatchSampler needs one dataset item = one single sample
+        # (ImageFaceDataset/FramePoolVideoDataset), not a whole multi-frame clip
+        # (VideoFaceDataset) - 3d_video only gets it in frame_pool mode, never
+        # clip mode (where "pairing" would mean pairing whole clips, not the
+        # single-frame granularity Lvc actually needs).
+        needs_identity_pairing = category == "3d_image" or (category == "3d_video" and video_mode == "frame_pool")
+        if needs_identity_pairing:
+            # Lvc (implementation-plan.md Sec 6) needs same-identity pairs within a
+            # batch - the default DataLoader(sampler=..., batch_size=...) path just
+            # chunks the shuffled index stream positionally, with no way to express
+            # that constraint, so eligible 3D categories get a custom batch_sampler
+            # instead.
+            batch_sampler = IdentityAwareBatchSampler(
+                dataset, distributed_sampler, category_cfg.batch_size, category_cfg.drop_last,
+            )
+            loader = DataLoader(
+                dataset, batch_sampler=batch_sampler,
+                num_workers=category_cfg.num_workers,
+                pin_memory=True, persistent_workers=category_cfg.num_workers > 0,
+            )
+            category_loaders[category] = loader
+            category_samplers[category] = batch_sampler
+        else:
+            loader = DataLoader(
+                dataset, batch_size=category_cfg.batch_size, sampler=distributed_sampler,
+                num_workers=category_cfg.num_workers, drop_last=category_cfg.drop_last,
+                pin_memory=True, persistent_workers=category_cfg.num_workers > 0,
+            )
+            category_loaders[category] = loader
+            category_samplers[category] = distributed_sampler
 
     return CombinedFaceLoader(category_loaders, category_samplers)

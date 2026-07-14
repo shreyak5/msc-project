@@ -57,33 +57,32 @@ def test_features_batchnorm_weight_is_frozen(mica):
     assert not mica.arcface.features.weight.requires_grad
 
 
-def test_mica_shape_loss_zero_when_shape_matches_mica_output(mica):
+def test_mica_shape_loss_zero_when_shape_matches_target(mica):
     n = 2
     img_mica = torch.rand(n, 3, constants.MICA_IMAGE_SIZE, constants.MICA_IMAGE_SIZE)
     with torch.no_grad():
         target_shape = mica(img_mica)
 
-    loss = mica_shape_loss(target_shape, mica, img_mica)
+    loss = mica_shape_loss(target_shape, target_shape)
     assert loss.item() == pytest.approx(0.0, abs=1e-5)
 
 
-def test_mica_shape_loss_nonzero_when_shape_differs(mica):
+def test_mica_shape_loss_nonzero_when_shape_differs():
     n = 2
-    img_mica = torch.rand(n, 3, constants.MICA_IMAGE_SIZE, constants.MICA_IMAGE_SIZE)
+    target_shape = torch.randn(n, constants.FLAME_SHAPE_DIM)
     shape_params = torch.randn(n, constants.FLAME_SHAPE_DIM)
 
-    loss = mica_shape_loss(shape_params, mica, img_mica)
+    loss = mica_shape_loss(shape_params, target_shape)
     assert loss.item() > 0
 
 
-def test_mica_shape_loss_gradients_flow_to_shape_params_only(mica):
+def test_mica_shape_loss_gradients_flow_to_shape_params_only():
     n = 2
-    img_mica = torch.rand(n, 3, constants.MICA_IMAGE_SIZE, constants.MICA_IMAGE_SIZE)
+    target_shape = torch.randn(n, constants.FLAME_SHAPE_DIM)
     shape_params = torch.randn(n, constants.FLAME_SHAPE_DIM, requires_grad=True)
 
-    loss = mica_shape_loss(shape_params, mica, img_mica)
+    loss = mica_shape_loss(shape_params, target_shape)
     loss.backward()
 
     assert shape_params.grad is not None
     assert torch.any(shape_params.grad != 0)
-    assert all(p.grad is None for p in mica.parameters())

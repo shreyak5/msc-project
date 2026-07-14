@@ -97,6 +97,30 @@ def batch_orth_proj(points: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
     return camera[:, :, 0:1] * translated
 
 
+def project_landmarks(points: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
+    """points: (B, N, 3) 3D points (e.g. FLAME's landmarks_fan/landmarks_mp),
+    camera: (B, 3) = [scale, tx, ty] (same convention as batch_orth_proj) ->
+    (B, N, 2) 2D-projected landmarks, Y increasing downward (image convention,
+    the reverse of FLAME's own Y-up mesh space - the source of the sign flip
+    below). Not guaranteed to land in [-1, 1] by this formula alone - scale/
+    tx/ty are themselves learned, and only converge toward the [-1, 1] range GT
+    landmarks are cached in (dataset_processing/dataloading/landmark_cache.py's
+    _normalize) as an emergent effect of training (this same camera also
+    projects FLAME's vertices for the rasterizer, which does hard-require
+    [-1, 1] NDC space, so both consumers pull the learned camera toward that
+    same range).
+
+    Factored out of Renderer.forward()'s landmark-projection loop so callers
+    that only need landmark projection (e.g. the Stage 1 pretraining loop,
+    which has no photometric loss and so never needs the full rasterizer)
+    don't have to instantiate a whole Renderer (FLAME_masks.pkl, PyTorch3D
+    rasterizer setup, ...) just to reuse this - and so this exact flip
+    convention only has one implementation to keep in sync, not two."""
+    projected = batch_orth_proj(points, camera)
+    projected[:, :, 1:] = -projected[:, :, 1:]
+    return projected[..., :2]
+
+
 def _keep_vertices_and_update_faces(faces: torch.Tensor, vertices_to_keep) -> torch.Tensor:
     """faces: (F, 3), vertices_to_keep: vertex indices to keep -> faces re-indexed
     to only that vertex subset, dropping any face that referenced a removed vertex."""
@@ -165,11 +189,9 @@ class Renderer(nn.Module):
         transformed_vertices = batch_orth_proj(vertices, cam_params)
         transformed_vertices[:, :, 1:] = -transformed_vertices[:, :, 1:]
 
-        transformed_landmarks = {}
-        for key, points in landmarks.items():
-            projected = batch_orth_proj(points, cam_params)
-            projected[:, :, 1:] = -projected[:, :, 1:]
-            transformed_landmarks[f"transformed_{key}"] = projected[..., :2]
+        transformed_landmarks = {
+            f"transformed_{key}": project_landmarks(points, cam_params) for key, points in landmarks.items()
+        }
 
         rendered_img = self._render(vertices, transformed_vertices)
 

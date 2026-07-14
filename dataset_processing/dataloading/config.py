@@ -29,6 +29,8 @@ class DataloaderConfig:
     crop_cache_root: str
     mica_cache_root: str
     mica_device: str
+    landmark_cache_root: str
+    fan_device: str
     detector: DetectorConfig
     categories: dict[str, CategoryConfig]
 
@@ -45,6 +47,8 @@ def load_dataloader_config(path: str | Path) -> DataloaderConfig:
         crop_cache_root=raw["crop_cache_root"],
         mica_cache_root=raw["mica_cache_root"],
         mica_device=raw["mica_device"],
+        landmark_cache_root=raw["landmark_cache_root"],
+        fan_device=raw["fan_device"],
         detector=DetectorConfig(**raw["detector"]),
         categories={name: CategoryConfig(**fields) for name, fields in raw["categories"].items()},
     )

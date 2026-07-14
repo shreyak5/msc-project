@@ -123,3 +123,17 @@ def crop_face(image, face_detector, scale=1.4, image_size=224):
     tform = get_crop_transform(image, box, scale=scale, image_size=image_size)
     cropped_image = warp_crop(image, tform, image_size=image_size)
     return cropped_image, tform
+
+
+def get_cropped_face_box(image_size=224, scale=1.4):
+    """The fixed box (in crop-pixel space) that the original detected face box
+    occupies within any crop_face(..., scale, image_size)-produced crop -
+    derived analytically from get_crop_transform's own geometry (which maps the
+    *scaled* box to fill the whole image_size canvas, centered on it), not
+    detected. By construction this is the same box for every crop built with
+    the same scale/image_size (ignoring the rare case where the original box
+    was clamped to the frame edge in get_crop_transform), so re-running face
+    detection on an already-cropped image just to get a box for utils.
+    landmark_utils.run_fan would be redundant."""
+    margin = image_size * (1 - 1 / scale) / 2
+    return np.array([margin, margin, image_size - margin, image_size - margin], dtype=np.float32)

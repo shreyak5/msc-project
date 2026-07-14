@@ -1,15 +1,13 @@
+import os
+import sys
 from dataclasses import dataclass
 
 import numpy as np
 
-from landmark_utils import (
-    build_retinaface_detector,
-    build_mediapipe_detector,
-    build_fan_predictor,
-    crop_face,
-    run_mediapipe,
-    run_fan,
-)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from preprocessing.cropping import build_retinaface_detector, crop_face, get_cropped_face_box  # noqa: E402
+from utils.landmark_utils import build_mediapipe_detector, build_fan_predictor, run_mediapipe, run_fan  # noqa: E402
+
 from metrics import per_frame_euclidean_error, per_frame_vertex_error
 from methods.smirk_method import SmirkMethod
 
@@ -69,6 +67,10 @@ def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
 
     errors = {name: [] for name in landmark_sets}
     per_frame_vertices = []
+    # Fixed for every frame in this clip (crop_scale/crop_size don't vary per-frame) -
+    # see get_cropped_face_box's docstring for why this avoids a second, redundant
+    # RetinaFace call on the already-cropped image just to get FAN a box.
+    fan_box = get_cropped_face_box(image_size=crop_size, scale=crop_scale)
 
     for frame in frames:
         cropped, _tform = crop_face(frame, evaluators.face_detector, scale=crop_scale, image_size=crop_size)
@@ -85,7 +87,7 @@ def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
         pred = evaluators.method.predict(cropped)
 
         if 'fan' in landmark_sets:
-            gt_fan, _scores = run_fan(evaluators.face_detector, evaluators.fan_predictor, cropped)
+            gt_fan, _scores = run_fan(evaluators.fan_predictor, cropped, fan_box)
             errors['fan'].append(per_frame_euclidean_error(pred.get('fan'), gt_fan))
             if 'fan' in vis_writers:
                 vis_writers['fan'].write(_draw_overlay(cropped, gt_fan, pred.get('fan')))

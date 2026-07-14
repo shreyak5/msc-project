@@ -212,3 +212,11 @@ EMOTION_IMAGE_SIZE = SVIT_IMG_SIZE
 # Sec 6 weights paragraph: "Starting loss weights (from SMIRK): cycle 10,
 # landmark 100, VGG 10, photometric 1, emotion 1."
 EMOTION_LOSS_WEIGHT = 1.0
+
+# GT landmark precompute (dataset_processing/dataloading/landmark_cache.py, Sec
+# 5.3). MediaPipe's own FaceLandmarker model asset - a data file (not code),
+# copied from baselines/smirk_experiments/assets/face_landmarker.task, same as
+# FLAME_MASK_AREA_WEIGHTS's source assets. Not the same file as
+# FLAME_MEDIAPIPE_LMK_EMBEDDING_PATH above, which is the curated 105-point
+# index/barycentric-coordinate mapping, not a detector model.
+MEDIAPIPE_TASK_MODEL_PATH = "assets/face_landmarker.task"

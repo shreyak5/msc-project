@@ -4,6 +4,8 @@ crop_scale: 1.4
 crop_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/face_crop_cache
 mica_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/mica_shape_cache
 mica_device: cuda
+landmark_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/landmark_cache
+fan_device: cuda
 
 detector:
   device: cpu
