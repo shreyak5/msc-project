@@ -157,3 +157,36 @@ MESH_LOSS_EXPRESSIVE_REGIONS: tuple[str, ...] = (
     "forehead",
 )
 MESH_LOSS_EYEBALL_REGIONS: tuple[str, ...] = ("left_eyeball", "right_eyeball")
+
+# Expression cycle consistency augmentation (model/losses/cycle.py, Sec 6). SMIRK's
+# own precomputed FaMoS-fitted expression templates (direct iterative FLAME fitting
+# on FaMoS's extreme/asymmetric expressions), used for the "template injection"
+# augmentation type. Path/class-list match SMIRK's src/utils/utils.py load_templates()
+# exactly (quick_install.sh's expression_templates_famos.zip).
+EXPRESSION_TEMPLATES_PATH = "assets/expression_templates_famos"
+# SMIRK's own encoder config only ever used num_expression=50, so that's all their
+# fitting pipeline saved per template frame - less than our FLAME_EXPRESSION_DIM=100.
+# model/losses/cycle.py's template-injection augmentation zeroes dims beyond this.
+EXPRESSION_TEMPLATE_NUM_DIMS = 50
+EXPRESSION_TEMPLATE_CLASSES: tuple[str, ...] = (
+    "lips_back",
+    "rolling_lips",
+    "mouth_side",
+    "kissing",
+    "high_smile",
+    "mouth_up",
+    "mouth_middle",
+    "mouth_down",
+    "blow_cheeks",
+    "cheeks_in",
+    "jaw",
+    "lips_up",
+)
+
+# Cycle loss inner weights (model/losses/cycle.py): expression_cycle_loss bundles
+# MSE(expression) + MSE(jaw)*10 + MSE(eyelid)*10, matching SMIRK's actual code (not
+# just its paper's narrower Eq. 2, which covers expression only) - the plan's single
+# outer "cycle 10" weight (Sec 6) is calibrated against this bundle as a whole.
+CYCLE_EXPRESSION_WEIGHT = 1.0
+CYCLE_JAW_WEIGHT = 10.0
+CYCLE_EYELID_WEIGHT = 10.0
