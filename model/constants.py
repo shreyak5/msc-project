@@ -74,10 +74,53 @@ UNET_OUT_CHANNELS = 3
 UNET_INIT_FEATURES = 32
 UNET_RES_BLOCKS = 5
 
-# FLAME model assets (model/flame.py), paths relative to the repo root.
+# FLAME model assets (model/flame/flame.py), paths relative to the repo root.
 FLAME_MODEL_PATH = "assets/FLAME2020/generic_model.pkl"
 FLAME_LMK_EMBEDDING_PATH = "assets/landmark_embedding.npy"
 FLAME_MEDIAPIPE_LMK_EMBEDDING_PATH = "assets/mediapipe_landmark_embedding/mediapipe_landmark_embedding.npz"
 FLAME_L_EYELID_PATH = "assets/l_eyelid.npy"
 FLAME_R_EYELID_PATH = "assets/r_eyelid.npy"
 EXPECTED_NUM_FLAME_VERTICES = 5023
+
+# Renderer assets (model/flame/renderer.py), paths relative to the repo root. No
+# separate head-template mesh asset needed: verified empirically that
+# assets/head_template.obj's face connectivity is identical to FLAME's own
+# faces_tensor (model/flame/flame.py), so the renderer takes that directly rather
+# than loading a redundant duplicate. FLAME_masks.pkl is a genuinely separate,
+# curated vertex-region annotation (face/neck/ears/scalp/...), not derivable from
+# the FLAME model file itself.
+RENDERER_FLAME_MASKS_PATH = "assets/FLAME_masks/FLAME_masks.pkl"
+# Sec 2.5/Sec 9: render only the face region, not the full head - matches SMIRK's own
+# config (config_train.yaml: render.full_head: False).
+RENDERER_FULL_HEAD = False
+RENDERER_IMAGE_SIZE = SVIT_IMG_SIZE
+
+# Masking / pixel-transfer (model/flame/masking.py, Sec 2.5: "masked input image with
+# ~1% randomly retained face pixels"). Matches SMIRK's actual trainer config
+# (config_train.yaml: mask_ratio: 0.01, mask_dilation_radius: 10). FLAME_masks_triangles
+# is a curated map of FLAME-region-name -> triangle indices, used to bias which
+# triangles are eligible to be sampled as retained pixels (Sec 2.5's ablation note:
+# keep the 1% ratio - 5% breaks expression control).
+MASK_RATIO = 0.01
+MASK_DILATION_RADIUS = 10
+FLAME_MASKS_TRIANGLES_PATH = "assets/FLAME_masks/FLAME_masks_triangles.npy"
+NUM_FLAME_FACES = 9976
+# Per-triangle-region sampling weight (0 = never sample, e.g. neck/ears/eyeballs
+# should never leak into the sparse appearance hint; 0.5 = half-weight for
+# lips/nose, since sampling those could leak mouth-shape/expression information
+# directly, partially defeating the point of forcing geometry-only expression
+# inference; 1.0 = full weight for "clean" skin regions).
+FLAME_MASK_AREA_WEIGHTS: dict[str, float] = {
+    "neck": 0.0,
+    "right_eyeball": 0.0,
+    "right_ear": 0.0,
+    "lips": 0.5,
+    "nose": 0.5,
+    "left_ear": 0.0,
+    "eye_region": 1.0,
+    "forehead": 1.0,
+    "left_eye_region": 1.0,
+    "right_eye_region": 1.0,
+    "face_clean": 1.0,
+    "cleaner_lips": 1.0,
+}
