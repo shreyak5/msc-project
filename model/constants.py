@@ -190,3 +190,25 @@ EXPRESSION_TEMPLATE_CLASSES: tuple[str, ...] = (
 CYCLE_EXPRESSION_WEIGHT = 1.0
 CYCLE_JAW_WEIGHT = 10.0
 CYCLE_EYELID_WEIGHT = 10.0
+
+# MICA shape distillation (model/mica/, model/losses/mica_shape.py, Sec 6d-9).
+# Checkpoint path matches quick_install.sh's download location. Arcface's expected
+# input size (a tightly aligned face crop, NOT the same crop as the main SViT
+# input - see model/mica/mica.py's forward() docstring) and feature dim are fixed
+# by the pretrained architecture, not tunable.
+MICA_CHECKPOINT_PATH = "assets/mica.tar"
+MICA_IMAGE_SIZE = 112
+MICA_ARCFACE_FEATURE_DIM = 512
+# Sec 6 weights paragraph: "For losses with no published anchor, starting guesses
+# ...: MICA shape distillation 1.0".
+MICA_SHAPE_LOSS_WEIGHT = 1.0
+
+# Emotion loss (model/emotion/, model/losses/emotion.py, Sec 6d-10). Checkpoint
+# path matches the actual downloaded filename (deca-epoch=01-val_loss_total/
+# dataloader_idx_0=1.27607644.ckpt). Unlike MICA, this network takes the SAME
+# 224x224 crop as the main SViT/renderer pipeline (no separate alignment step).
+EMOTION_CHECKPOINT_PATH = "assets/ResNet50/checkpoints/deca-epoch=01-val_loss_total/dataloader_idx_0=1.27607644.ckpt"
+EMOTION_IMAGE_SIZE = SVIT_IMG_SIZE
+# Sec 6 weights paragraph: "Starting loss weights (from SMIRK): cycle 10,
+# landmark 100, VGG 10, photometric 1, emotion 1."
+EMOTION_LOSS_WEIGHT = 1.0
