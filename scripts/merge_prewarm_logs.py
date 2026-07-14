@@ -40,14 +40,20 @@ def merge_frame_counts(crop_cache_root: str, num_shards: int, datasets_yaml: str
 def main():
     parser = argparse.ArgumentParser(
         description="Finalize a sharded prewarm run: merge per-shard no-face/error logs into one "
-                    "CSV, and merge per-shard video frame-count caches into one file per dataset.")
-    parser.add_argument("--crop_cache_root", type=str, required=True)
+                    "CSV, and (for the crop cache only) merge per-shard video frame-count caches "
+                    "into one file per dataset - prewarm_mica_cache.py probes frame counts live "
+                    "itself rather than caching them, so there's no MICA-side shard to merge there.")
+    parser.add_argument("--crop_cache_root", type=str, default=None)
+    parser.add_argument("--mica_cache_root", type=str, default=None)
     parser.add_argument("--num_shards", type=int, required=True)
     parser.add_argument("--datasets_yaml", type=str, default=str(DEFAULT_DATASETS_YAML))
     args = parser.parse_args()
 
-    merge_logs(args.crop_cache_root, args.num_shards)
-    merge_frame_counts(args.crop_cache_root, args.num_shards, args.datasets_yaml)
+    if args.crop_cache_root is not None:
+        merge_logs(args.crop_cache_root, args.num_shards)
+        merge_frame_counts(args.crop_cache_root, args.num_shards, args.datasets_yaml)
+    if args.mica_cache_root is not None:
+        merge_logs(args.mica_cache_root, args.num_shards)
 
 
 if __name__ == "__main__":

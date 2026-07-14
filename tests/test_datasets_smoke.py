@@ -84,6 +84,7 @@ def test_image_dataset_shape_dtype_labels_excluded_and_cache_hit(tmp_path, monke
         "test_dataset", manifest_path, "train", tmp_path / "cache",
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
     assert len(ds) == 1
 
@@ -117,6 +118,7 @@ def test_3d_image_dataset_includes_flame_vertices(tmp_path, monkeypatch):
         "test_3d_dataset", manifest_path, "train", tmp_path / "cache",
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=True,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
     item = ds[0]
     assert set(item.keys()) == {"dataset", "subject_id", "pixel_values", "flame_vertices"}
@@ -143,6 +145,7 @@ def test_video_dataset_segments_and_padding(tmp_path, monkeypatch):
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25",
         with_flame=False, max_frames=16,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
     assert len(ds) == 3  # ceil(40/16) = 3 non-overlapping segments
 
@@ -190,6 +193,7 @@ def test_video_dataset_mp4_backed_tail_segment_uses_correct_frame_indices(tmp_pa
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25",
         with_flame=False, max_frames=4,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
     # 10 real frames, max_frames=4 -> segments start at 0, 4, 8. The last one only has
     # frames 8 and 9 for real, and must pad by repeating frame 9 - not frame 0.
@@ -253,6 +257,7 @@ def _build_synthetic_registry(tmp_path: Path) -> Path:
 def _synthetic_dataloader_config(tmp_path: Path) -> DataloaderConfig:
     return DataloaderConfig(
         seed=42, image_size=224, crop_scale=1.4, crop_cache_root=str(tmp_path / "cache"),
+        mica_cache_root=str(tmp_path / "mica_cache"), mica_device="cpu",
         detector=DetectorConfig(device="cpu", threshold=0.8, model_name="mobilenet0.25"),
         categories={
             "2d_image": CategoryConfig(batch_size=2, max_frames=1, num_workers=0, drop_last=True),
@@ -318,6 +323,7 @@ def test_frame_pool_dataset_one_entry_per_video_not_per_frame(tmp_path, monkeypa
         "test_framepool_dataset", manifest_path, "train", tmp_path / "cache",
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
     # One video, 20 frames - a frame pool has exactly one entry (unlike VideoFaceDataset,
     # which would split this into ceil(20/max_frames) segments).
@@ -355,6 +361,7 @@ def test_frame_pool_dataset_resamples_a_different_frame_across_accesses(tmp_path
         "test_framepool_dataset", manifest_path, "train", tmp_path / "cache",
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
 
     for _ in range(30):
@@ -389,6 +396,7 @@ def test_frame_pool_dataset_loads_flame_mesh_for_the_sampled_frame(tmp_path, mon
         "test_framepool_3d_dataset", manifest_path, "train", tmp_path / "cache",
         image_size=224, crop_scale=1.4, detector_device="cpu",
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=True,
+        with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
     )
 
     item = ds[0]

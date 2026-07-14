@@ -27,6 +27,8 @@ class DataloaderConfig:
     image_size: int
     crop_scale: float
     crop_cache_root: str
+    mica_cache_root: str
+    mica_device: str
     detector: DetectorConfig
     categories: dict[str, CategoryConfig]
 
@@ -41,6 +43,8 @@ def load_dataloader_config(path: str | Path) -> DataloaderConfig:
         image_size=raw["image_size"],
         crop_scale=raw["crop_scale"],
         crop_cache_root=raw["crop_cache_root"],
+        mica_cache_root=raw["mica_cache_root"],
+        mica_device=raw["mica_device"],
         detector=DetectorConfig(**raw["detector"]),
         categories={name: CategoryConfig(**fields) for name, fields in raw["categories"].items()},
     )

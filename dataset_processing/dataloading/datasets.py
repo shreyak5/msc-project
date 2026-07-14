@@ -13,6 +13,8 @@ from dataset_processing.dataloading.crop_cache import get_cropped_face
 from dataset_processing.dataloading.detector_pool import get_detector
 from dataset_processing.dataloading.frame_count_cache import load_frame_counts
 from dataset_processing.dataloading.mesh_io import load_flame_vertices
+from dataset_processing.dataloading.mica_cache import get_mica_shape
+from dataset_processing.dataloading.mica_pool import get_mica
 from dataset_processing.dataloading.registry import DatasetEntry
 from dataset_processing.dataloading.video_frames import (
     frame_indices_for_segment,
@@ -20,9 +22,14 @@ from dataset_processing.dataloading.video_frames import (
     segment_starts,
 )
 from dataset_processing.manifest_schema import ManifestRow, read_manifest
+from model.constants import MICA_IMAGE_SIZE
 
 IMAGE_CATEGORIES = {"2d_image", "3d_image"}
 FLAME_CATEGORIES = {"3d_image", "3d_video"}
+# MICA shape distillation (implementation-plan.md Sec 6/7) applies to 2D batches
+# only - 3D categories get direct mesh/Lvc supervision instead, a stronger signal
+# than MICA's distilled estimate.
+MICA_CATEGORIES = {"2d_image", "2d_video"}
 
 
 def _crop_to_tensor(crop_bgr: np.ndarray) -> torch.Tensor:
@@ -69,6 +76,9 @@ class ImageFaceDataset(Dataset):
         detector_threshold: float,
         detector_model_name: str,
         with_flame: bool,
+        with_mica: bool,
+        mica_cache_root: str | Path,
+        mica_device: str,
     ):
         self.dataset_name = dataset_name
         self.rows = [row for row in read_manifest(manifest_path) if row.split == split]
@@ -79,12 +89,18 @@ class ImageFaceDataset(Dataset):
         self.detector_threshold = detector_threshold
         self.detector_model_name = detector_model_name
         self.with_flame = with_flame
+        self.with_mica = with_mica
+        self.mica_cache_root = Path(mica_cache_root)
+        self.mica_device = mica_device
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def _get_detector(self):
         return get_detector(self.detector_device, self.detector_threshold, self.detector_model_name)
+
+    def _get_mica(self):
+        return get_mica(self.mica_device)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
@@ -102,6 +118,16 @@ class ImageFaceDataset(Dataset):
         }
         if self.with_flame:
             item["flame_vertices"] = load_flame_vertices(row.flame_mesh_paths[0])
+        if self.with_mica:
+            mica_shape, flag_mica_valid = get_mica_shape(
+                self.mica_cache_root, self.dataset_name, row.sample_id, None,
+                lambda: cv2.imread(image_path),
+                self._get_detector,
+                self._get_mica,
+                MICA_IMAGE_SIZE,
+            )
+            item["mica_shape"] = torch.from_numpy(mica_shape)
+            item["flag_mica_valid"] = flag_mica_valid
         return item
 
 
@@ -119,6 +145,9 @@ class VideoFaceDataset(Dataset):
         detector_model_name: str,
         with_flame: bool,
         max_frames: int,
+        with_mica: bool,
+        mica_cache_root: str | Path,
+        mica_device: str,
     ):
         self.dataset_name = dataset_name
         self.crop_cache_root = Path(crop_cache_root)
@@ -129,6 +158,9 @@ class VideoFaceDataset(Dataset):
         self.detector_model_name = detector_model_name
         self.with_flame = with_flame
         self.max_frames = max_frames
+        self.with_mica = with_mica
+        self.mica_cache_root = Path(mica_cache_root)
+        self.mica_device = mica_device
 
         # Each index entry carries the row's true frame count alongside it (resolved by
         # _rows_with_frame_counts, from a prewarm-built cache or a live probe - never
@@ -146,6 +178,9 @@ class VideoFaceDataset(Dataset):
     def _get_detector(self):
         return get_detector(self.detector_device, self.detector_threshold, self.detector_model_name)
 
+    def _get_mica(self):
+        return get_mica(self.mica_device)
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         row, start, num_frames_total = self.index[index]
         frame_indices = frame_indices_for_segment(start, self.max_frames, num_frames_total)
@@ -153,6 +188,8 @@ class VideoFaceDataset(Dataset):
 
         frames = []
         meshes = []
+        mica_shapes = []
+        flags_mica_valid = []
         for frame_idx in frame_indices:
             crop = get_cropped_face(
                 self.crop_cache_root, self.dataset_name, row.sample_id, frame_idx,
@@ -163,6 +200,16 @@ class VideoFaceDataset(Dataset):
             frames.append(_crop_to_tensor(crop))
             if self.with_flame:
                 meshes.append(load_flame_vertices(row.flame_mesh_paths[frame_idx]))
+            if self.with_mica:
+                mica_shape, flag_mica_valid = get_mica_shape(
+                    self.mica_cache_root, self.dataset_name, row.sample_id, frame_idx,
+                    lambda fi=frame_idx: source.read_frame(fi),
+                    self._get_detector,
+                    self._get_mica,
+                    MICA_IMAGE_SIZE,
+                )
+                mica_shapes.append(torch.from_numpy(mica_shape))
+                flags_mica_valid.append(flag_mica_valid)
         source.close()
 
         item: dict[str, Any] = {
@@ -172,6 +219,9 @@ class VideoFaceDataset(Dataset):
         }
         if self.with_flame:
             item["flame_vertices"] = torch.stack(meshes, dim=0)
+        if self.with_mica:
+            item["mica_shape"] = torch.stack(mica_shapes, dim=0)
+            item["flag_mica_valid"] = torch.tensor(flags_mica_valid, dtype=torch.bool)
         return item
 
 
@@ -201,6 +251,9 @@ class FramePoolVideoDataset(Dataset):
         detector_threshold: float,
         detector_model_name: str,
         with_flame: bool,
+        with_mica: bool,
+        mica_cache_root: str | Path,
+        mica_device: str,
     ):
         self.dataset_name = dataset_name
         self.crop_cache_root = Path(crop_cache_root)
@@ -210,6 +263,9 @@ class FramePoolVideoDataset(Dataset):
         self.detector_threshold = detector_threshold
         self.detector_model_name = detector_model_name
         self.with_flame = with_flame
+        self.with_mica = with_mica
+        self.mica_cache_root = Path(mica_cache_root)
+        self.mica_device = mica_device
 
         self.rows_with_counts = _rows_with_frame_counts(dataset_name, manifest_path, split, crop_cache_root)
 
@@ -218,6 +274,9 @@ class FramePoolVideoDataset(Dataset):
 
     def _get_detector(self):
         return get_detector(self.detector_device, self.detector_threshold, self.detector_model_name)
+
+    def _get_mica(self):
+        return get_mica(self.mica_device)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row, num_frames_total = self.rows_with_counts[index]
@@ -230,7 +289,6 @@ class FramePoolVideoDataset(Dataset):
             self._get_detector,
             self.crop_scale, self.image_size,
         )
-        source.close()
 
         item: dict[str, Any] = {
             "dataset": self.dataset_name,
@@ -239,16 +297,29 @@ class FramePoolVideoDataset(Dataset):
         }
         if self.with_flame:
             item["flame_vertices"] = load_flame_vertices(row.flame_mesh_paths[frame_idx])
+        if self.with_mica:
+            mica_shape, flag_mica_valid = get_mica_shape(
+                self.mica_cache_root, self.dataset_name, row.sample_id, frame_idx,
+                lambda: source.read_frame(frame_idx),
+                self._get_detector,
+                self._get_mica,
+                MICA_IMAGE_SIZE,
+            )
+            item["mica_shape"] = torch.from_numpy(mica_shape)
+            item["flag_mica_valid"] = flag_mica_valid
+        source.close()
         return item
 
 
 def build_category_dataset(entry: DatasetEntry, split: str, cfg: DataloaderConfig) -> Dataset:
     with_flame = entry.category in FLAME_CATEGORIES
+    with_mica = entry.category in MICA_CATEGORIES
     if entry.category in IMAGE_CATEGORIES:
         return ImageFaceDataset(
             entry.name, entry.manifest_path, split, cfg.crop_cache_root,
             cfg.image_size, cfg.crop_scale, cfg.detector.device,
             cfg.detector.threshold, cfg.detector.model_name, with_flame=with_flame,
+            with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
         )
     category_cfg = cfg.categories[entry.category]
     return VideoFaceDataset(
@@ -256,4 +327,5 @@ def build_category_dataset(entry: DatasetEntry, split: str, cfg: DataloaderConfi
         cfg.image_size, cfg.crop_scale, cfg.detector.device,
         cfg.detector.threshold, cfg.detector.model_name, with_flame=with_flame,
         max_frames=category_cfg.max_frames,
+        with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
     )

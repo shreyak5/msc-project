@@ -14,6 +14,8 @@ chumpy
 pyyaml
 plyfile
 pytest
+pytorch-lightning  # only needed to unpickle assets/ResNet50/*.ckpt (a Lightning-format
+                   # checkpoint, model/emotion/emotion_net.py) - not used for training itself
 git+https://github.com/ibug-group/face_detection.git
 git+https://github.com/ibug-group/face_alignment.git
 
@@ -24,3 +26,7 @@ git+https://github.com/ibug-group/face_alignment.git
 # NOTE: uniface/ (used by scripts/segment_faces.py) is a vendored checkout, not
 # a pip requirement here. Install it separately into this venv with:
 #   uv pip install -e "./uniface[cpu]"   (or "[gpu]" for onnxruntime-gpu)
+
+# NOTE: model/flame/renderer.py needs pytorch3d (CUDA-compiled, not listed as a
+# plain pip dependency here since installation is version/CUDA-toolchain-specific).
+# Already installed in this environment (pytorch3d 0.7.8, torch 2.6.0+cu126).

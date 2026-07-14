@@ -1,4 +1,5 @@
 .venv/
+.pytest_cache/
 baselines/
 __pycache__/
 output/
@@ -6,3 +7,4 @@ output_dataset/
 assets/
 dataset_processing/manifests/
 pretrained_weights/
+CLAUDE.md
