@@ -124,3 +124,14 @@ FLAME_MASK_AREA_WEIGHTS: dict[str, float] = {
     "face_clean": 1.0,
     "cleaner_lips": 1.0,
 }
+
+# Regularization losses (model/losses/regularization.py, Sec 6, "all passes"): L2
+# penalty pulling params toward zero (FLAME's shape/expression bases are zero-
+# centered PCA coefficients - zero already means "neutral"/"mean face"). Kept as
+# separate per-parameter-group constants (so each can be tuned independently later),
+# but all currently equal - TokenFace uses a single uniform weight across all FLAME
+# params (shape/expression/jaw), unlike SMIRK's own differentiated per-parameter
+# weights; matches TokenFace here since it's the primary architecture reference.
+REG_EXPRESSION_WEIGHT = 1e-4
+REG_JAW_WEIGHT = 1e-4
+REG_SHAPE_WEIGHT = 1e-4
