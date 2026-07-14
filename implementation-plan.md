@@ -140,7 +140,7 @@ Notation: I input image, I′ = UNet output, M predicted mesh, V vertices.
 | VGG | L1 of VGG features of I′ vs I | 2D recon pass |
 | Landmark | L2 of projected 3D landmarks vs detected 2D landmarks; includes eye-closure and mouth/lip-closure terms (SMIRK/DECA-style) | pretraining + recon pass |
 | MICA shape distillation | L2 between predicted β and MICA's predicted β | pretraining + recon pass |
-| Mesh (3D) | region-weighted L1 between predicted and GT vertices | 3D batches, both stages |
+| Mesh (3D) | region-weighted L1 between predicted and GT vertices. Per-vertex weight from FLAME_masks.pkl regions: 2.0 for expressive regions (lips, eye_region, left/right_eye_region, nose, forehead), 1.0 for face (general skin) and boundary, 0.0 for left/right_eyeball (FLAME's eye joints are fixed, not predicted, per Sec 2 - no mechanism to fit these) and everything not in `face` (neck, ears, scalp - outside the face-only render region, Sec 2.5/9) | 3D batches, both stages |
 | Vertex consistency Lvc (3D identity swap) | swap β between two same-identity samples; L1 between resulting vertices and GT (TokenFace Eq. 5) | 3D identity-labeled batches |
 | Emotion | L2 between pretrained emotion-net features of I′ and I; **UNet frozen for this loss** (only the expression pathway updates) | recon pass |
 | Expression cycle consistency | augment ψ (permutation / perturbation / template injection / zeroing, with jaw+eyelid co-augmentation), render via UNet with **pixel transfer**, re-encode; L2(ψ̂, ψaug) (SMIRK Eq. 2) | augmentation pass |

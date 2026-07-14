@@ -135,3 +135,25 @@ FLAME_MASK_AREA_WEIGHTS: dict[str, float] = {
 REG_EXPRESSION_WEIGHT = 1e-4
 REG_JAW_WEIGHT = 1e-4
 REG_SHAPE_WEIGHT = 1e-4
+
+# Mesh (3D) region-weighted vertex loss (model/losses/mesh.py, Sec 6). Per-vertex
+# weight built from FLAME_masks.pkl regions (RENDERER_FLAME_MASKS_PATH - same asset
+# already used by the renderer). Not derived from SMIRK/TokenFace's own code (SMIRK
+# doesn't train with direct 3D mesh supervision at all; TokenFace's exact scheme
+# isn't published) - a reasoned default: up-weight the most expressive regions,
+# zero out regions with no fitting mechanism (eyeballs - FLAME's eye joints are
+# fixed, not predicted, Sec 2) or outside the face-only render region (Sec 2.5/9).
+MESH_LOSS_EXPRESSIVE_WEIGHT = 2.0
+MESH_LOSS_FACE_WEIGHT = 1.0
+MESH_LOSS_BOUNDARY_WEIGHT = 1.0
+MESH_LOSS_EYEBALL_WEIGHT = 0.0
+MESH_LOSS_DEFAULT_WEIGHT = 0.0  # neck/ears/scalp - never explicitly set, stay at this
+MESH_LOSS_EXPRESSIVE_REGIONS: tuple[str, ...] = (
+    "lips",
+    "eye_region",
+    "left_eye_region",
+    "right_eye_region",
+    "nose",
+    "forehead",
+)
+MESH_LOSS_EYEBALL_REGIONS: tuple[str, ...] = ("left_eyeball", "right_eyeball")
