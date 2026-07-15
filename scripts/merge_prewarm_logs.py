@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--crop_cache_root", type=str, default=None)
     parser.add_argument("--mica_cache_root", type=str, default=None)
     parser.add_argument("--landmark_cache_root", type=str, default=None)
+    parser.add_argument("--face_parsing_cache_root", type=str, default=None)
     parser.add_argument("--num_shards", type=int, required=True)
     parser.add_argument("--datasets_yaml", type=str, default=str(DEFAULT_DATASETS_YAML))
     args = parser.parse_args()
@@ -57,6 +58,8 @@ def main():
         merge_logs(args.mica_cache_root, args.num_shards)
     if args.landmark_cache_root is not None:
         merge_logs(args.landmark_cache_root, args.num_shards)
+    if args.face_parsing_cache_root is not None:
+        merge_logs(args.face_parsing_cache_root, args.num_shards)
 
 
 if __name__ == "__main__":

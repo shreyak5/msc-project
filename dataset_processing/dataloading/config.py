@@ -31,6 +31,8 @@ class DataloaderConfig:
     mica_device: str
     landmark_cache_root: str
     fan_device: str
+    face_parsing_cache_root: str
+    xseg_device: str
     detector: DetectorConfig
     categories: dict[str, CategoryConfig]
 
@@ -49,6 +51,8 @@ def load_dataloader_config(path: str | Path) -> DataloaderConfig:
         mica_device=raw["mica_device"],
         landmark_cache_root=raw["landmark_cache_root"],
         fan_device=raw["fan_device"],
+        face_parsing_cache_root=raw["face_parsing_cache_root"],
+        xseg_device=raw["xseg_device"],
         detector=DetectorConfig(**raw["detector"]),
         categories={name: CategoryConfig(**fields) for name, fields in raw["categories"].items()},
     )

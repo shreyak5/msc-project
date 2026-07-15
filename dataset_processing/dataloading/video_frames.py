@@ -111,3 +111,14 @@ def frame_indices_for_segment(start: int, max_frames: int, num_frames_total: int
     while len(indices) < max_frames:
         indices.append(last)
     return indices
+
+
+def valid_mask_for_segment(start: int, max_frames: int, num_frames_total: int) -> list[bool]:
+    """Which of frame_indices_for_segment's max_frames entries are real source
+    frames versus the trailing last-frame-repeated padding it adds to short
+    tail segments - True for the former, False for the latter. Needed by
+    TemporalTransformer's valid_mask input and the temporal-smoothness loss
+    (both must exclude padded duplicate frames, not treat a real-to-padding
+    repeat as genuine zero motion)."""
+    num_real = max(0, min(max_frames, num_frames_total - start))
+    return [True] * num_real + [False] * (max_frames - num_real)

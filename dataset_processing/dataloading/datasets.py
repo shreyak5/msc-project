@@ -11,6 +11,8 @@ from torch.utils.data import Dataset
 from dataset_processing.dataloading.config import DataloaderConfig
 from dataset_processing.dataloading.crop_cache import get_cropped_face
 from dataset_processing.dataloading.detector_pool import get_detector
+from dataset_processing.dataloading.face_parsing_cache import get_face_parsing
+from dataset_processing.dataloading.face_parsing_pool import get_xseg
 from dataset_processing.dataloading.frame_count_cache import load_frame_counts
 from dataset_processing.dataloading.landmark_cache import get_landmarks
 from dataset_processing.dataloading.landmark_pool import get_fan_predictor, get_mediapipe_detector
@@ -22,6 +24,7 @@ from dataset_processing.dataloading.video_frames import (
     frame_indices_for_segment,
     make_frame_source,
     segment_starts,
+    valid_mask_for_segment,
 )
 from dataset_processing.manifest_schema import ManifestRow, read_manifest
 from model.constants import MEDIAPIPE_TASK_MODEL_PATH, MICA_IMAGE_SIZE
@@ -32,6 +35,10 @@ CATEGORIES_3D = {"3d_image", "3d_video"}
 # both apply to 2D batches only - 3D categories get direct mesh/Lvc supervision
 # instead, a stronger signal than either MICA's distilled estimate or a detected-
 # landmark reprojection target. Shared by both since the scoping is identical.
+# The face-region mask (masking -> UNet reconstruction) is 2D-only for the same
+# reason. Visibility scores are different: VideoFaceDataset computes them
+# unconditionally regardless of 2D/3D, since TemporalTransformer needs them for
+# every video category's clips in Pass C - see build_category_dataset.
 CATEGORIES_2D = {"2d_image", "2d_video"}
 
 
@@ -85,6 +92,9 @@ class ImageFaceDataset(Dataset):
         with_landmarks: bool,
         landmark_cache_root: str | Path,
         fan_device: str,
+        with_face_mask: bool,
+        face_parsing_cache_root: str | Path,
+        xseg_device: str,
     ):
         self.dataset_name = dataset_name
         self.rows = [row for row in read_manifest(manifest_path) if row.split == split]
@@ -101,6 +111,9 @@ class ImageFaceDataset(Dataset):
         self.with_landmarks = with_landmarks
         self.landmark_cache_root = Path(landmark_cache_root)
         self.fan_device = fan_device
+        self.with_face_mask = with_face_mask
+        self.face_parsing_cache_root = Path(face_parsing_cache_root)
+        self.xseg_device = xseg_device
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -123,6 +136,9 @@ class ImageFaceDataset(Dataset):
 
     def _get_mediapipe_detector(self):
         return get_mediapipe_detector(MEDIAPIPE_TASK_MODEL_PATH)
+
+    def _get_xseg(self):
+        return get_xseg(self.xseg_device)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
@@ -163,6 +179,16 @@ class ImageFaceDataset(Dataset):
             item["flag_landmarks_fan_valid"] = landmarks["flag_landmarks_fan_valid"]
             item["landmarks_mp"] = torch.from_numpy(landmarks["landmarks_mp"])
             item["flag_landmarks_mp_valid"] = landmarks["flag_landmarks_mp_valid"]
+        if self.with_face_mask:
+            face_mask, _visibility_ratio, flag_face_mask_valid = get_face_parsing(
+                self.face_parsing_cache_root, self.dataset_name, row.sample_id, None,
+                lambda: cv2.imread(image_path),
+                self._get_detector,
+                self._get_xseg,
+                self.crop_scale, self.image_size,
+            )
+            item["face_mask"] = torch.from_numpy(face_mask)
+            item["flag_face_mask_valid"] = flag_face_mask_valid
         return item
 
 
@@ -186,6 +212,9 @@ class VideoFaceDataset(Dataset):
         with_landmarks: bool,
         landmark_cache_root: str | Path,
         fan_device: str,
+        with_face_mask: bool,
+        face_parsing_cache_root: str | Path,
+        xseg_device: str,
     ):
         self.dataset_name = dataset_name
         self.crop_cache_root = Path(crop_cache_root)
@@ -202,6 +231,9 @@ class VideoFaceDataset(Dataset):
         self.with_landmarks = with_landmarks
         self.landmark_cache_root = Path(landmark_cache_root)
         self.fan_device = fan_device
+        self.with_face_mask = with_face_mask
+        self.face_parsing_cache_root = Path(face_parsing_cache_root)
+        self.xseg_device = xseg_device
 
         # Each index entry carries the row's true frame count alongside it (resolved by
         # _rows_with_frame_counts, from a prewarm-built cache or a live probe - never
@@ -228,9 +260,13 @@ class VideoFaceDataset(Dataset):
     def _get_mediapipe_detector(self):
         return get_mediapipe_detector(MEDIAPIPE_TASK_MODEL_PATH)
 
+    def _get_xseg(self):
+        return get_xseg(self.xseg_device)
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         row, start, num_frames_total = self.index[index]
         frame_indices = frame_indices_for_segment(start, self.max_frames, num_frames_total)
+        valid_mask = valid_mask_for_segment(start, self.max_frames, num_frames_total)
         source = make_frame_source(row.image_paths)
 
         frames = []
@@ -241,6 +277,10 @@ class VideoFaceDataset(Dataset):
         flags_landmarks_fan_valid = []
         landmarks_mp_list = []
         flags_landmarks_mp_valid = []
+        face_masks = []
+        flags_face_mask_valid = []
+        visibility_ratios = []
+        flags_visibility_valid = []
         for frame_idx in frame_indices:
             crop = get_cropped_face(
                 self.crop_cache_root, self.dataset_name, row.sample_id, frame_idx,
@@ -274,18 +314,40 @@ class VideoFaceDataset(Dataset):
                 flags_landmarks_fan_valid.append(landmarks["flag_landmarks_fan_valid"])
                 landmarks_mp_list.append(torch.from_numpy(landmarks["landmarks_mp"]))
                 flags_landmarks_mp_valid.append(landmarks["flag_landmarks_mp_valid"])
+            # visibility_ratio is always computed (TemporalTransformer needs it for
+            # every video category's clips in Pass C, 2D and 3D alike - unlike
+            # face_mask, which only 2D categories need for masking -> UNet
+            # reconstruction), so this call isn't gated behind with_face_mask.
+            face_mask, visibility_ratio, flag_face_parsing_valid = get_face_parsing(
+                self.face_parsing_cache_root, self.dataset_name, row.sample_id, frame_idx,
+                lambda fi=frame_idx: source.read_frame(fi),
+                self._get_detector,
+                self._get_xseg,
+                self.crop_scale, self.image_size,
+            )
+            if self.with_face_mask:
+                face_masks.append(torch.from_numpy(face_mask))
+                flags_face_mask_valid.append(flag_face_parsing_valid)
+            visibility_ratios.append(visibility_ratio)
+            flags_visibility_valid.append(flag_face_parsing_valid)
         source.close()
 
         item: dict[str, Any] = {
             "dataset": self.dataset_name,
             "subject_id": row.subject_id,
             "pixel_values": torch.stack(frames, dim=0),
+            "valid_mask": torch.tensor(valid_mask, dtype=torch.bool),
+            "visibility_ratio": torch.tensor(visibility_ratios, dtype=torch.float32),
+            "flag_visibility_valid": torch.tensor(flags_visibility_valid, dtype=torch.bool),
         }
         if self.with_flame:
             item["flame_vertices"] = torch.stack(meshes, dim=0)
         if self.with_mica:
             item["mica_shape"] = torch.stack(mica_shapes, dim=0)
             item["flag_mica_valid"] = torch.tensor(flags_mica_valid, dtype=torch.bool)
+        if self.with_face_mask:
+            item["face_mask"] = torch.stack(face_masks, dim=0)
+            item["flag_face_mask_valid"] = torch.tensor(flags_face_mask_valid, dtype=torch.bool)
         if self.with_landmarks:
             item["landmarks_fan"] = torch.stack(landmarks_fan_list, dim=0)
             item["flag_landmarks_fan_valid"] = torch.tensor(flags_landmarks_fan_valid, dtype=torch.bool)
@@ -326,6 +388,9 @@ class FramePoolVideoDataset(Dataset):
         with_landmarks: bool,
         landmark_cache_root: str | Path,
         fan_device: str,
+        with_face_mask: bool,
+        face_parsing_cache_root: str | Path,
+        xseg_device: str,
     ):
         self.dataset_name = dataset_name
         self.crop_cache_root = Path(crop_cache_root)
@@ -341,6 +406,9 @@ class FramePoolVideoDataset(Dataset):
         self.with_landmarks = with_landmarks
         self.landmark_cache_root = Path(landmark_cache_root)
         self.fan_device = fan_device
+        self.with_face_mask = with_face_mask
+        self.face_parsing_cache_root = Path(face_parsing_cache_root)
+        self.xseg_device = xseg_device
 
         self.rows_with_counts = _rows_with_frame_counts(dataset_name, manifest_path, split, crop_cache_root)
 
@@ -363,6 +431,9 @@ class FramePoolVideoDataset(Dataset):
 
     def _get_mediapipe_detector(self):
         return get_mediapipe_detector(MEDIAPIPE_TASK_MODEL_PATH)
+
+    def _get_xseg(self):
+        return get_xseg(self.xseg_device)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row, num_frames_total = self.rows_with_counts[index]
@@ -406,6 +477,16 @@ class FramePoolVideoDataset(Dataset):
             item["flag_landmarks_fan_valid"] = landmarks["flag_landmarks_fan_valid"]
             item["landmarks_mp"] = torch.from_numpy(landmarks["landmarks_mp"])
             item["flag_landmarks_mp_valid"] = landmarks["flag_landmarks_mp_valid"]
+        if self.with_face_mask:
+            face_mask, _visibility_ratio, flag_face_mask_valid = get_face_parsing(
+                self.face_parsing_cache_root, self.dataset_name, row.sample_id, frame_idx,
+                lambda: source.read_frame(frame_idx),
+                self._get_detector,
+                self._get_xseg,
+                self.crop_scale, self.image_size,
+            )
+            item["face_mask"] = torch.from_numpy(face_mask)
+            item["flag_face_mask_valid"] = flag_face_mask_valid
         source.close()
         return item
 
@@ -425,6 +506,13 @@ def build_category_dataset(
     with_flame = entry.category in CATEGORIES_3D
     with_mica = entry.category in CATEGORIES_2D
     with_landmarks = entry.category in CATEGORIES_2D
+    # Only 2D batches go through masking -> UNet -> photometric/VGG reconstruction
+    # (Sec 7 Pass A/C) - 3D batches get direct mesh/Lvc supervision instead, no
+    # rendering, so they never need the face-region mask. VideoFaceDataset itself
+    # always computes visibility_ratio unconditionally (TemporalTransformer needs
+    # it for every video category's clips in Pass C, 2D and 3D alike) - not
+    # gated by with_face_mask, which only controls the face_mask field.
+    with_face_mask = entry.category in CATEGORIES_2D
     if entry.category in IMAGE_CATEGORIES:
         return ImageFaceDataset(
             entry.name, entry.manifest_path, split, cfg.crop_cache_root,
@@ -432,6 +520,7 @@ def build_category_dataset(
             cfg.detector.threshold, cfg.detector.model_name, with_flame=with_flame,
             with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
             with_landmarks=with_landmarks, landmark_cache_root=cfg.landmark_cache_root, fan_device=cfg.fan_device,
+            with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
         )
     if video_mode == "frame_pool":
         return FramePoolVideoDataset(
@@ -440,6 +529,7 @@ def build_category_dataset(
             cfg.detector.threshold, cfg.detector.model_name, with_flame=with_flame,
             with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
             with_landmarks=with_landmarks, landmark_cache_root=cfg.landmark_cache_root, fan_device=cfg.fan_device,
+            with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
         )
     category_cfg = cfg.categories[entry.category]
     return VideoFaceDataset(
@@ -449,4 +539,5 @@ def build_category_dataset(
         max_frames=category_cfg.max_frames,
         with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
         with_landmarks=with_landmarks, landmark_cache_root=cfg.landmark_cache_root, fan_device=cfg.fan_device,
+        with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
     )

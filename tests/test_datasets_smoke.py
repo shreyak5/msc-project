@@ -88,6 +88,7 @@ def test_image_dataset_shape_dtype_labels_excluded_and_cache_hit(tmp_path, monke
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
     assert len(ds) == 1
 
@@ -123,6 +124,7 @@ def test_3d_image_dataset_includes_flame_vertices(tmp_path, monkeypatch):
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=True,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
     item = ds[0]
     assert set(item.keys()) == {"dataset", "subject_id", "pixel_values", "flame_vertices"}
@@ -151,11 +153,12 @@ def test_video_dataset_segments_and_padding(tmp_path, monkeypatch):
         with_flame=False, max_frames=16,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
     assert len(ds) == 3  # ceil(40/16) = 3 non-overlapping segments
 
     item0 = ds[0]
-    assert set(item0.keys()) == {"dataset", "subject_id", "pixel_values"}
+    assert set(item0.keys()) == {"dataset", "subject_id", "pixel_values", "valid_mask", "visibility_ratio", "flag_visibility_valid"}
     assert item0["pixel_values"].shape == (16, 3, 224, 224)
 
     item2 = ds[2]  # last, short segment (frames 32-39, 8 real frames padded to 16)
@@ -191,7 +194,12 @@ def test_video_dataset_mp4_backed_tail_segment_uses_correct_frame_indices(tmp_pa
         requested_frame_indices.append(frame_index)
         return np.zeros((image_size, image_size, 3), dtype=np.uint8)
 
+    def fake_get_face_parsing(cache_root, dataset, sample_id, frame_index, load_source_image,
+                               get_detector_fn, get_xseg_fn, scale, image_size, on_noface=None, on_error=None):
+        return np.zeros((image_size, image_size), dtype=np.float32), 0.0, True
+
     monkeypatch.setattr(datasets_module, "get_cropped_face", fake_get_cropped_face)
+    monkeypatch.setattr(datasets_module, "get_face_parsing", fake_get_face_parsing)
 
     ds = VideoFaceDataset(
         "test_mp4_dataset", manifest_path, "train", tmp_path / "cache",
@@ -200,6 +208,7 @@ def test_video_dataset_mp4_backed_tail_segment_uses_correct_frame_indices(tmp_pa
         with_flame=False, max_frames=4,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
     # 10 real frames, max_frames=4 -> segments start at 0, 4, 8. The last one only has
     # frames 8 and 9 for real, and must pad by repeating frame 9 - not frame 0.
@@ -265,6 +274,7 @@ def _synthetic_dataloader_config(tmp_path: Path) -> DataloaderConfig:
         seed=42, image_size=224, crop_scale=1.4, crop_cache_root=str(tmp_path / "cache"),
         mica_cache_root=str(tmp_path / "mica_cache"), mica_device="cpu",
         landmark_cache_root=str(tmp_path / "landmark_cache"), fan_device="cpu",
+        face_parsing_cache_root=str(tmp_path / "face_parsing_cache"), xseg_device="cpu",
         detector=DetectorConfig(device="cpu", threshold=0.8, model_name="mobilenet0.25"),
         categories={
             "2d_image": CategoryConfig(batch_size=2, max_frames=1, num_workers=0, drop_last=True),
@@ -362,6 +372,7 @@ def test_frame_pool_dataset_one_entry_per_video_not_per_frame(tmp_path, monkeypa
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
     # One video, 20 frames - a frame pool has exactly one entry (unlike VideoFaceDataset,
     # which would split this into ceil(20/max_frames) segments).
@@ -401,6 +412,7 @@ def test_frame_pool_dataset_resamples_a_different_frame_across_accesses(tmp_path
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=False,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
 
     for _ in range(30):
@@ -437,6 +449,7 @@ def test_frame_pool_dataset_loads_flame_mesh_for_the_sampled_frame(tmp_path, mon
         detector_threshold=0.8, detector_model_name="mobilenet0.25", with_flame=True,
         with_mica=False, mica_cache_root=tmp_path / "mica_cache", mica_device="cpu",
         with_landmarks=False, landmark_cache_root=tmp_path / "landmark_cache", fan_device="cpu",
+        with_face_mask=False, face_parsing_cache_root=tmp_path / "face_parsing_cache", xseg_device="cpu",
     )
 
     item = ds[0]

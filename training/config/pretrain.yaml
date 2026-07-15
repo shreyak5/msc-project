@@ -1,0 +1,8 @@
+seed: 42
+learning_rate: 0.0001
+num_epochs: 20
+log_interval_steps: 50
+checkpoint_interval_epochs: 1
+device: cuda
+checkpoint_dir: /projects/u6kf/sk3925_misc/checkpoints/pretrain
+dataloader_config_path: dataset_processing/config/dataloader.yaml

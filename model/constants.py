@@ -158,6 +158,37 @@ MESH_LOSS_EXPRESSIVE_REGIONS: tuple[str, ...] = (
 )
 MESH_LOSS_EYEBALL_REGIONS: tuple[str, ...] = ("left_eyeball", "right_eyeball")
 
+# Overall loss coefficients (TokenFace anchors, Sec 6 weights paragraph: "mesh
+# λmesh = 2.0, Lvc λvc = 1.2") - these scale the mesh/Lvc losses' contribution to
+# the total training objective, distinct from the per-region weights above (which
+# only shape the region-weighted average *within* the mesh loss itself).
+MESH_LOSS_LAMBDA = 2.0
+VERTEX_CONSISTENCY_LOSS_LAMBDA = 1.2
+
+# Landmark loss (model/losses/landmark.py, Sec 6). Sec 6 weights paragraph:
+# "Starting loss weights (from SMIRK): ... landmark 100 ...". SMIRK's own code
+# applies this weight to both the FAN and MediaPipe terms independently, then
+# sums them (not averaged) - matched here. Deliberately lowered from SMIRK's
+# literal 100 to 10 for this project: compared only against the losses actually
+# co-active during Stage 1 pretraining (mesh 2.0, Lvc 1.2, MICA 1.0 - VGG/cycle/
+# photometric/emotion aren't active until Stage 2), literal 100 would be a
+# 50-100x outlier rather than just "somewhat higher" - 10 keeps landmark's
+# intended priority (geometry correctness leads Stage 1, per its own stated
+# purpose) without that scale of disparity. Revisit once real loss curves are
+# available (Sec 6: "All weights are config knobs").
+LANDMARK_LOSS_WEIGHT = 10.0
+# Eye/lip closure terms have no SMIRK precedent at all (an EMOCA-derived
+# addition, Sec 6d-3) - reusing the same weight to start rather than introducing
+# a second untuned constant.
+CLOSURE_LOSS_WEIGHT = LANDMARK_LOSS_WEIGHT
+
+# 2D/3D batch balance (Sec 6 weights paragraph: "2D/3D balance 0.4/0.6") - Stage 1
+# (and Pass A) draw one 2D batch and one 3D batch every step (Sec 5.2's joint
+# per-category batching); these scale each batch type's total loss before summing
+# into the single combined backward pass.
+LOSS_BALANCE_2D = 0.4
+LOSS_BALANCE_3D = 0.6
+
 # Expression cycle consistency augmentation (model/losses/cycle.py, Sec 6). SMIRK's
 # own precomputed FaMoS-fitted expression templates (direct iterative FLAME fitting
 # on FaMoS's extreme/asymmetric expressions), used for the "template injection"
