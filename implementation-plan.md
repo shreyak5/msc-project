@@ -74,9 +74,13 @@ Five trainable component groups.
 - **Precomputed offline for every video frame in every dataset** and stored alongside the data. The identical computation is used at inference time.
 
 ### 4.2 Window
-- Attention restricted to a window of **w = 11** frames (config parameter).
-- Rationale recorded: smoothness needs ~3 adjacent frames; occlusion infill needs longer reach.
-- ⚠ Open risk: signing occlusions can exceed 11 frames. Before finalizing, measure the occlusion-span distribution on the sign language datasets using the visibility score, and increase w if a large fraction of occlusion spans lack clean frames within the window. Keep w a config knob.
+- Attention restricted to a **centred** window of **w = 15** frames (config parameter): query frame i attends only to frames `[i - w//2, i + w//2]`.
+- Rationale recorded: smoothness needs ~3 adjacent frames; occlusion infill needs longer reach. w was raised from an initial 11 to 15 to give more reach for the occlusion-span risk below.
+- Implemented as true local (sliding-window) attention (`model/temporal.py`), not a mask on top of dense attention - a mask alone would still cost O(N²) regardless of w (`nn.MultiheadAttention` always computes the full QK^T; masking only changes what survives softmax). True local attention costs O(N·w), linear in however many frames N it's called with. This matters for two reasons:
+  1. **Avoid compute blow-up on long videos at inference.** A full-length inference video can be run through TT in one pass without cost exploding.
+  2. **Avoid boundary artifacts from chunking long videos.** Because cost no longer depends on N, inference never needs to chop a long video into fixed-size clips for compute reasons - eliminating the artificial "seam" every clip-length frames where a frame would otherwise lose access to real neighbors purely because of where a chunk boundary fell. Boundary effects now only occur at the true start/end of the video (unavoidable - there simply aren't w//2 neighbors there), not at arbitrary chunk seams.
+- Training clip length (`max_frames` in `dataset_processing/config/dataloader.yaml`) remains a separate, larger batching decision, unrelated to w now that attention cost no longer depends on clip length.
+- ⚠ Open risk: signing occlusions can exceed w frames. Before finalizing, measure the occlusion-span distribution on the sign language datasets using the visibility score, and increase w further if a large fraction of occlusion spans lack clean frames within the window. Keep w a config knob.
 
 ### 4.3 Score normalization
 - Within each window, subtract the window mean from each frame's score → normalized relative scores. (Mean subtraction only — do **not** z-score/divide by std: unit-variance rescaling would amplify negligible score noise in near-uniform windows into large attention biases. Mean subtraction preserves variation magnitude, so only genuinely low-visibility frames receive a strong bias.)

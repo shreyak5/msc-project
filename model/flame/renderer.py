@@ -121,6 +121,24 @@ def project_landmarks(points: torch.Tensor, camera: torch.Tensor) -> torch.Tenso
     return projected[..., :2]
 
 
+def transform_vertices(vertices: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
+    """vertices: (B, V, 3) mesh vertices (e.g. FLAME's output vertices), camera:
+    (B, 3) = [scale, tx, ty] (same convention as batch_orth_proj/project_landmarks)
+    -> (B, V, 3) camera-space vertices in the rasterizer's NDC-like space -
+    exactly what Renderer.forward() computes as transformed_vertices, factored
+    out for callers that need it without the (expensive) rasterization
+    Renderer.forward() always also performs to produce rendered_img. Used by
+    Stage 2 Pass B's cycle pass: mesh_based_mask_uniform_faces needs
+    transformed_vertices from BOTH the pre- and post-augmentation pose to
+    resample the same mesh points before/after re-posing, but only the
+    post-augmentation pose's rendered_img is ever actually fed to the UNet -
+    calling the full Renderer for the pre-augmentation pose too would rasterize
+    an image that's immediately discarded."""
+    transformed_vertices = batch_orth_proj(vertices, camera)
+    transformed_vertices[:, :, 1:] = -transformed_vertices[:, :, 1:]
+    return transformed_vertices
+
+
 def _keep_vertices_and_update_faces(faces: torch.Tensor, vertices_to_keep) -> torch.Tensor:
     """faces: (F, 3), vertices_to_keep: vertex indices to keep -> faces re-indexed
     to only that vertex subset, dropping any face that referenced a removed vertex."""
@@ -186,8 +204,7 @@ class Renderer(nn.Module):
         Returns: rendered_img (B,3,H,W) grayscale-shaded mesh render, transformed_vertices
         (B,5023,3, in the rasterizer's NDC-like space), and transformed_<key> (B,N,2)
         2D-projected coordinates for each landmark set passed in."""
-        transformed_vertices = batch_orth_proj(vertices, cam_params)
-        transformed_vertices[:, :, 1:] = -transformed_vertices[:, :, 1:]
+        transformed_vertices = transform_vertices(vertices, cam_params)
 
         transformed_landmarks = {
             f"transformed_{key}": project_landmarks(points, cam_params) for key, points in landmarks.items()

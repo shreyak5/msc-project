@@ -86,6 +86,11 @@ def build_combined_loader(
         # (VideoFaceDataset) - 3d_video only gets it in frame_pool mode, never
         # clip mode (where "pairing" would mean pairing whole clips, not the
         # single-frame granularity Lvc actually needs).
+        # 'spawn', not the Linux default 'fork': workers lazily construct CUDA
+        # models (MICA, FAN) on cache misses, and a forked worker can't
+        # re-initialize a CUDA context the parent process already touched.
+        mp_context = "spawn" if category_cfg.num_workers > 0 else None
+
         needs_identity_pairing = category == "3d_image" or (category == "3d_video" and video_mode == "frame_pool")
         if needs_identity_pairing:
             # Lvc (implementation-plan.md Sec 6) needs same-identity pairs within a
@@ -100,6 +105,7 @@ def build_combined_loader(
                 dataset, batch_sampler=batch_sampler,
                 num_workers=category_cfg.num_workers,
                 pin_memory=True, persistent_workers=category_cfg.num_workers > 0,
+                multiprocessing_context=mp_context,
             )
             category_loaders[category] = loader
             category_samplers[category] = batch_sampler
@@ -108,6 +114,7 @@ def build_combined_loader(
                 dataset, batch_size=category_cfg.batch_size, sampler=distributed_sampler,
                 num_workers=category_cfg.num_workers, drop_last=category_cfg.drop_last,
                 pin_memory=True, persistent_workers=category_cfg.num_workers > 0,
+                multiprocessing_context=mp_context,
             )
             category_loaders[category] = loader
             category_samplers[category] = distributed_sampler

@@ -50,8 +50,10 @@ TT_NUM_HEADS = 8
 # ViT-style expansion ratio as SVIT_MLP_RATIO.
 TT_MLP_RATIO = 4.0
 
-# Attention bias window (Sec 4.2)
-TT_WINDOW_SIZE = 11
+# Attention bias window (Sec 4.2): a centred window (radius = TT_WINDOW_SIZE // 2 on
+# each side of the query frame), enforced as true local attention in model/temporal.py
+# (not just a mask on top of dense attention) so compute/memory scale with N*w, not N^2.
+TT_WINDOW_SIZE = 15
 
 # Attention bias (Sec 4.4): bias(i,j,h) = m_h * s_tilde_j - n_h * |i-j|. Heads span a
 # genuine grid of (m, n) combinations (not a single m=k*n line): 4 m-values x 2
@@ -221,6 +223,14 @@ EXPRESSION_TEMPLATE_CLASSES: tuple[str, ...] = (
 CYCLE_EXPRESSION_WEIGHT = 1.0
 CYCLE_JAW_WEIGHT = 10.0
 CYCLE_EYELID_WEIGHT = 10.0
+# Outer weight scaling expression_cycle_loss's whole bundle above (Sec 6 weights
+# paragraph: "Starting loss weights (from SMIRK): cycle 10 ..."), applied in
+# Stage 2 Pass B's training loop, distinct from the inner per-term weights.
+CYCLE_LOSS_WEIGHT = 10.0
+# Sec 6 weights paragraph: "For losses with no published anchor, starting
+# guesses ...: beta identity cycle consistency 10 (mirroring the expression
+# cycle weight, per SMIRK's 'similar to Eq. 2')".
+IDENTITY_CYCLE_LOSS_WEIGHT = 10.0
 
 # MICA shape distillation (model/mica/, model/losses/mica_shape.py, Sec 6d-9).
 # Checkpoint path matches quick_install.sh's download location. Arcface's expected
@@ -243,6 +253,24 @@ EMOTION_IMAGE_SIZE = SVIT_IMG_SIZE
 # Sec 6 weights paragraph: "Starting loss weights (from SMIRK): cycle 10,
 # landmark 100, VGG 10, photometric 1, emotion 1."
 EMOTION_LOSS_WEIGHT = 1.0
+
+# Photometric (model/losses/photometric.py's photometric_loss, an L1) and VGG
+# perceptual (VGGPerceptualLoss) losses, Stage 2 Pass A's reconstruction path
+# only (no photometric supervision in Stage 1 - no rendering happens there).
+# Sec 6 weights paragraph: "Starting loss weights (from SMIRK): ... VGG 10,
+# photometric 1 ...".
+PHOTOMETRIC_LOSS_WEIGHT = 1.0
+VGG_LOSS_WEIGHT = 10.0
+
+# Temporal smoothness (model/losses/temporal_smoothness.py), Stage 2 Pass C
+# only. Sec 6 weights paragraph: "For losses with no published anchor,
+# starting guesses ...: temporal smoothness - acceleration term 1.0, shape
+# velocity term 1.0 (keep smoothness weights low initially and raise only if
+# jitter persists; over-weighting damps mouthings)." acceleration_penalty
+# applies to expression/eyelid, jaw, and camera+global-rotation params;
+# velocity_penalty applies to shape only (see Sec 6's loss table).
+TEMPORAL_ACCELERATION_WEIGHT = 1.0
+TEMPORAL_SHAPE_VELOCITY_WEIGHT = 1.0
 
 # GT landmark precompute (dataset_processing/dataloading/landmark_cache.py, Sec
 # 5.3). MediaPipe's own FaceLandmarker model asset - a data file (not code),

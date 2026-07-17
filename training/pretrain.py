@@ -26,87 +26,27 @@ from dataset_processing.dataloading.combined_loader import build_combined_loader
 from dataset_processing.dataloading.config import load_dataloader_config
 from model import constants
 from model.encoder import SViT
+from model.encoding import encode_image
 from model.farl_weights import load_farl_pretrained
 from model.flame.flame import FLAME
 from model.flame.renderer import project_landmarks
 from model.heads import ComponentHeads
 from model.losses.landmark import eye_closure_loss, fan_boundary_loss, lip_closure_loss, mediapipe_landmark_loss
-from model.losses.mesh import build_region_weights, region_weighted_mesh_loss, vertex_consistency_loss
+from model.losses.mesh import build_region_weights
 from model.losses.mica_shape import mica_shape_loss
-from model.losses.regularization import l2_regularization
 from training.checkpoint import load_checkpoint, save_checkpoint
 from training.distributed import cleanup_distributed, is_distributed, is_main_process, setup_distributed
 from training.config import PretrainConfig, load_pretrain_config
-from training.loss_utils import gated_loss
+from training.loss_utils import concat_category_fields, gated_loss, next_batch, regularization_loss
+from training.losses_3d import compute_3d_losses
 
 _REPO_ROOT_RELATIVE_FARL_PATH = "pretrained_weights/farl/FaRL-Base-Patch16-LAIONFace20M-ep64.pth"
-
-
-def _concat_category_fields(batch: dict, categories: list[str], keys: list[str], device: str) -> dict[str, torch.Tensor]:
-    """batch: one yielded step from CombinedFaceLoader (dict keyed by category
-    name). categories: which of that step's categories to combine (e.g.
-    ["2d_image", "2d_video"]) - safe to concatenate along the batch dimension
-    even though their configured batch_sizes differ (dataset_processing/config/
-    dataloader.yaml), and safe for 3D categories specifically because
-    IdentityAwareBatchSampler's identity pairs are already guaranteed within
-    each category's own batch before this concatenation ever happens - combining
-    afterward doesn't lose that guarantee, it just makes one bigger batch out of
-    two already-valid ones. Returns a flat dict (not nested by category) - each
-    key maps to one tensor spanning all combined samples, with the first
-    category's rows first, second category's rows after (torch.cat preserves
-    list order)."""
-    return {key: torch.cat([batch[category][key] for category in categories], dim=0).to(device) for key in keys}
-
-
-def _split_expression(expression_and_eyelid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    return (
-        expression_and_eyelid[:, : constants.FLAME_EXPRESSION_DIM],
-        expression_and_eyelid[:, constants.FLAME_EXPRESSION_DIM :],
-    )
-
-
-def _split_camera(camera: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return camera[:, constants.CAMERA_SCALE_SLICE], camera[:, constants.CAMERA_ROTATION_SLICE], camera[:, constants.CAMERA_TRANSLATION_SLICE]
-
-
-def encode(svit: SViT, heads: ComponentHeads, pixel_values: torch.Tensor) -> dict[str, torch.Tensor]:
-    """pixel_values: (B, 3, H, W) -> dict of decoded FLAME/camera parameters,
-    split into the pieces FLAME.forward()/project_landmarks actually take
-    (expression's trailing eyelid dims and camera's scale/rotation/translation
-    slices, per model/constants.py's fixed layout)."""
-    features = svit(pixel_values)
-    params = heads(features)
-    expression, eyelid = _split_expression(params["expression"])
-    scale, rotation, translation = _split_camera(params["camera"])
-    return {
-        "shape": params["shape"],
-        "expression": expression,
-        "eyelid": eyelid,
-        "jaw": params["jaw"],
-        "scale": scale,
-        "rotation": rotation,
-        "translation": translation,
-    }
-
-
-def _regularization_loss(encoded: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Shape/expression/jaw only (Sec 6: "L2 on expression parameters (and
-    standard FLAME param regularizers - shape, jaw)") - deliberately not camera:
-    zero isn't a sensible prior for scale (degenerate) or rotation (would bias
-    against genuinely non-frontal poses, which matter here given sign language
-    video's real head-orientation variation), unlike shape/expression's
-    zero-centered PCA coefficients where zero legitimately means "neutral"."""
-    return (
-        constants.REG_SHAPE_WEIGHT * l2_regularization(encoded["shape"])
-        + constants.REG_EXPRESSION_WEIGHT * l2_regularization(encoded["expression"])
-        + constants.REG_JAW_WEIGHT * l2_regularization(encoded["jaw"])
-    )
 
 
 def compute_2d_losses(
     svit: SViT, heads: ComponentHeads, flame: FLAME, batch_2d: dict[str, torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    encoded = encode(svit, heads, batch_2d["pixel_values"])
+    encoded = encode_image(svit, heads, batch_2d["pixel_values"])
     cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
 
     flame_out = flame(encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"])
@@ -124,7 +64,7 @@ def compute_2d_losses(
         lip_closure_loss, batch_2d["flag_landmarks_mp_valid"], projected_mp, batch_2d["landmarks_mp"]
     )
     mica_loss = gated_loss(mica_shape_loss, batch_2d["flag_mica_valid"], encoded["shape"], batch_2d["mica_shape"])
-    reg_loss = _regularization_loss(encoded)
+    reg_loss = regularization_loss(encoded)
 
     total = (
         constants.LANDMARK_LOSS_WEIGHT * landmark_loss
@@ -135,71 +75,6 @@ def compute_2d_losses(
     metrics = {
         "landmark": landmark_loss.item(), "closure": closure_loss.item(),
         "mica": mica_loss.item(), "reg_2d": reg_loss.item(),
-    }
-    return total, metrics
-
-
-def find_identity_pairs(subject_ids: list[str]) -> list[tuple[int, int]]:
-    """Groups indices by subject_id, forms non-overlapping consecutive pairs
-    within each group (a group of 4 -> 2 pairs, not all C(4,2)=6 combinations -
-    avoids redundant compute and any one sample appearing in multiple pairs).
-    IdentityAwareBatchSampler already guarantees ~half the 3D batch is composed
-    of such pairs; this just finds them (the sampler communicates nothing
-    beyond subject_id itself, per its own docstring)."""
-    groups: dict[str, list[int]] = {}
-    for index, subject_id in enumerate(subject_ids):
-        groups.setdefault(subject_id, []).append(index)
-
-    pairs: list[tuple[int, int]] = []
-    for indices in groups.values():
-        for i in range(0, len(indices) - 1, 2):
-            pairs.append((indices[i], indices[i + 1]))
-    return pairs
-
-
-def compute_3d_losses(
-    svit: SViT, heads: ComponentHeads, flame: FLAME, region_weights: torch.Tensor,
-    batch_3d: dict[str, torch.Tensor], subject_ids: list[str], device: str,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    encoded = encode(svit, heads, batch_3d["pixel_values"])
-    flame_out = flame(encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"])
-
-    mesh_loss = region_weighted_mesh_loss(flame_out["vertices"], batch_3d["flame_vertices"], region_weights)
-
-    pairs = find_identity_pairs(subject_ids)
-    if pairs:
-        idx_a = torch.tensor([p[0] for p in pairs], device=device)
-        idx_b = torch.tensor([p[1] for p in pairs], device=device)
-
-        # Direction 1: a's shape + b's expression/jaw/eyelid/rotation, compared
-        # against b's own GT (TokenFace Eq. 5's literal direction).
-        swapped_a_into_b = flame(
-            encoded["shape"][idx_a], encoded["expression"][idx_b], encoded["jaw"][idx_b],
-            encoded["eyelid"][idx_b], encoded["rotation"][idx_b],
-        )["vertices"]
-        # Direction 2: the reverse - b's shape + a's motion, compared against a's
-        # own GT. Not in the plan's own Eq. 5, but the pair is already found, so
-        # this doubles the Lvc signal per pair at negligible extra cost.
-        swapped_b_into_a = flame(
-            encoded["shape"][idx_b], encoded["expression"][idx_a], encoded["jaw"][idx_a],
-            encoded["eyelid"][idx_a], encoded["rotation"][idx_a],
-        )["vertices"]
-
-        lvc_loss = (
-            vertex_consistency_loss(swapped_a_into_b, batch_3d["flame_vertices"][idx_b], region_weights)
-            + vertex_consistency_loss(swapped_b_into_a, batch_3d["flame_vertices"][idx_a], region_weights)
-        ) / 2
-    else:
-        lvc_loss = torch.zeros((), device=device)
-
-    reg_loss = _regularization_loss(encoded)
-
-    total = constants.MESH_LOSS_LAMBDA * mesh_loss + constants.VERTEX_CONSISTENCY_LOSS_LAMBDA * lvc_loss + reg_loss
-    metrics = {
-        "mesh": mesh_loss.item(),
-        "lvc": lvc_loss.item() if torch.is_tensor(lvc_loss) else lvc_loss,
-        "reg_3d": reg_loss.item(),
-        "num_pairs": len(pairs),
     }
     return total, metrics
 
@@ -226,10 +101,10 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
         # loading a checkpoint into the plain model first guarantees every rank
         # starts from identical weights via that broadcast, on top of every
         # rank reading the same checkpoint file from shared storage.
-        start_epoch, step = 0, 0
+        start_step = 0
         if checkpoint_pth is not None:
-            loaded_epoch, step = load_checkpoint(checkpoint_pth, svit, heads, optimizer, device)
-            start_epoch = loaded_epoch + 1
+            loaded_step = load_checkpoint(checkpoint_pth, {"svit": svit, "heads": heads}, optimizer, device)
+            start_step = loaded_step + 1
 
         if is_distributed():
             svit = DistributedDataParallel(svit, device_ids=[local_rank])
@@ -241,34 +116,59 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
             datasets_yaml_path=cfg.datasets_yaml_path, video_mode="frame_pool",
         )
 
+        # On a resume, start the loader's own epoch counter from an
+        # approximation (step // len(loader)) rather than 0 - avoids reusing
+        # the exact same early shuffle orders after a resume (training/
+        # checkpoint.py's save_checkpoint docstring has the full reasoning).
+        epoch = start_step // len(loader)
+        loader.set_epoch(epoch)
+        iterator = iter(loader)
+
         keys_2d = ["pixel_values", "mica_shape", "flag_mica_valid", "landmarks_fan", "flag_landmarks_fan_valid", "landmarks_mp", "flag_landmarks_mp_valid"]
         keys_3d = ["pixel_values", "flame_vertices"]
 
-        for epoch in range(start_epoch, cfg.num_epochs):
-            loader.set_epoch(epoch)
-            for batch in loader:
-                batch_2d = _concat_category_fields(batch, ["2d_image", "2d_video"], keys_2d, device)
-                batch_3d = _concat_category_fields(batch, ["3d_image", "3d_video"], keys_3d, device)
-                subject_ids_3d = batch["3d_image"]["subject_id"] + batch["3d_video"]["subject_id"]
+        # Pre-set in case cfg.num_steps <= start_step (a resume where the
+        # loop body never runs even once) - a for loop that never executes
+        # never binds its loop variable, so referencing `step` after the loop
+        # for the unconditional final-save below would otherwise raise
+        # NameError.
+        step = start_step - 1
 
-                loss_2d, metrics_2d = compute_2d_losses(svit, heads, flame, batch_2d)
-                loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
-                total_loss = constants.LOSS_BALANCE_2D * loss_2d + constants.LOSS_BALANCE_3D * loss_3d
+        for step in range(start_step, cfg.num_steps):
+            batch, iterator, epoch = next_batch(loader, iterator, epoch)
+            batch_2d = concat_category_fields(batch, ["2d_image", "2d_video"], keys_2d, device)
+            batch_3d = concat_category_fields(batch, ["3d_image", "3d_video"], keys_3d, device)
+            subject_ids_3d = batch["3d_image"]["subject_id"] + batch["3d_video"]["subject_id"]
 
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
+            loss_2d, metrics_2d = compute_2d_losses(svit, heads, flame, batch_2d)
+            loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
+            total_loss = constants.LOSS_BALANCE_2D * loss_2d + constants.LOSS_BALANCE_3D * loss_3d
 
-                if is_main_process(rank) and step % cfg.log_interval_steps == 0:
-                    print(
-                        f"epoch {epoch} step {step}: total={total_loss.item():.4f} "
-                        f"2d={metrics_2d} 3d={metrics_3d}"
-                    )
-                step += 1
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
-            if is_main_process(rank) and (epoch + 1) % cfg.checkpoint_interval_epochs == 0:
-                path = save_checkpoint(cfg.checkpoint_dir, epoch, step, svit, heads, optimizer)
+            if is_main_process(rank) and step % cfg.log_interval_steps == 0:
+                print(
+                    f"step {step} (epoch {epoch}): total={total_loss.item():.4f} "
+                    f"2d={metrics_2d} 3d={metrics_3d}"
+                )
+
+            if is_main_process(rank) and (step + 1) % cfg.checkpoint_interval_steps == 0:
+                path = save_checkpoint(cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer)
                 print(f"saved checkpoint: {path}")
+
+        # Unconditional final save: cfg.num_steps isn't guaranteed to be a
+        # multiple of checkpoint_interval_steps (and either could change
+        # later), so the interval check above alone could finish training
+        # without ever saving the final weights. A duplicate save (if the
+        # last loop iteration's interval check ALSO just fired for this same
+        # step) just overwrites the same file with identical content -
+        # harmless. Guarded by step >= start_step so the num_steps<=start_step
+        # edge case (loop never ran) skips this redundant save entirely.
+        if is_main_process(rank) and step >= start_step:
+            path = save_checkpoint(cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer)
+            print(f"saved final checkpoint: {path}")
 
         if is_main_process(rank):
             print("DONE!")

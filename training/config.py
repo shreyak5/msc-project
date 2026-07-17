@@ -1,6 +1,6 @@
-"""Stage 1 pretraining config (implementation-plan.md Sec 7, "Stage 1 -
-Pre-training"), mirroring dataset_processing/dataloading/config.py's
-dataclass + YAML-loader pattern."""
+"""Stage 1/Stage 2 training config (implementation-plan.md Sec 7), mirroring
+dataset_processing/dataloading/config.py's dataclass + YAML-loader pattern
+(which itself holds multiple related config dataclasses in one file)."""
 
 from __future__ import annotations
 
@@ -20,16 +20,26 @@ class PretrainConfig:
     # encoder from scratch, so a lower LR to avoid wrecking the pretrained
     # features is the better anchor to borrow here.
     learning_rate: float
-    # Epoch-based rather than SMIRK's own "60k iterations" reference schedule:
-    # that iteration count was calibrated against SMIRK's own dataset composition
-    # and batch sizes, which don't transfer numerically to ours. TokenFace's own
-    # reference (10 epochs, batch_size=8) doesn't translate directly either - our
-    # dataloader.yaml uses much larger batch sizes (128 for 2d_image/3d_image),
-    # so the same epoch count means a very different total gradient-update budget.
-    # Starting guess, not a derived/calibrated value - revisit empirically.
-    num_epochs: int
+    # Step-based (not epoch-based): "epoch" isn't a well-defined progress unit
+    # once a loop can draw from a loader indefinitely (training/loss_utils.py's
+    # next_batch restarts the loader on exhaustion rather than stopping), and
+    # Stage 2 needs steps regardless (it draws from two independently-cycling
+    # loaders at different relative rates, so no single "epoch" spans both) -
+    # Stage 1 matches for consistency between the two stages.
+    #
+    # 60000 starts from SMIRK's own reference schedule (60k iterations), but
+    # that number was tuned together with SMIRK's own lr=5e-4 for from-scratch
+    # training - we use a different, gentler lr (TokenFace's 1e-4, since we're
+    # fine-tuning a pretrained transformer, not training from scratch), and LR
+    # and step-count interact (total "distance traveled" in weight-space
+    # depends on both together) in ways that pull in opposite directions here: a gentler
+    # LR suggests possibly needing MORE steps, while fine-tuning from an
+    # already-good initialization typically needs FEWER steps than from-scratch
+    # training. Neither effect is derivable without empirical tuning, so this
+    # is a starting guess, not a calibrated value - revisit empirically.
+    num_steps: int
     log_interval_steps: int
-    checkpoint_interval_epochs: int
+    checkpoint_interval_steps: int
     device: str
     checkpoint_dir: str
     dataloader_config_path: str
@@ -41,3 +51,44 @@ def load_pretrain_config(path: str | Path) -> PretrainConfig:
     with path.open() as f:
         raw = yaml.safe_load(f)
     return PretrainConfig(**raw)
+
+
+@dataclasses.dataclass
+class Stage2Config:
+    seed: int
+    # One shared LR for the combined svit+heads+unet+tt optimizer (training/
+    # stage2.py's run_pass_a/b/c each gate which subset actually moves via
+    # their own requires_grad_ toggling) - matches Stage 1's single-LR
+    # approach; the plan doesn't call for per-pass or per-component rates.
+    learning_rate: float
+    num_steps: int
+    log_interval_steps: int
+    checkpoint_interval_steps: int
+    device: str
+    # Stage 2's OWN checkpoint directory - separate from Stage 1's
+    # checkpoint_dir. Stage 2 never writes into Stage 1's checkpoints.
+    checkpoint_dir: str
+    # One-time seed: svit+heads only (no optimizer, no unet/tt) loaded from a
+    # Stage 1 checkpoint at startup, ONLY when this run has no Stage-2-own
+    # checkpoint to resume from (--checkpoint_pth unset). Ignored on a resume,
+    # since Stage 2's own checkpoint already has svit/heads as they were
+    # mid-Stage-2-training, not Stage 1's original values.
+    stage1_checkpoint_pth: str
+    dataloader_config_path: str
+    # Sec 7: "Cycle through the three passes each iteration (or in a fixed
+    # pattern; make the pattern a config knob)" - default is plain round-robin,
+    # but exposed as a real list (not hardcoded) per that explicit instruction.
+    pass_pattern: list[str] = dataclasses.field(default_factory=lambda: ["A", "B", "C"])
+    # Pass B alternates (tokens+SViT+heads)-update vs UNet-update - this is
+    # how many CONSECUTIVE calls to Pass B specifically (not outer-loop steps
+    # overall) happen before flipping which side updates. Default 1 =
+    # alternates every single Pass B call.
+    pass_b_alternation_period: int = 1
+    datasets_yaml_path: str = str(DEFAULT_DATASETS_YAML)
+
+
+def load_stage2_config(path: str | Path) -> Stage2Config:
+    path = Path(path)
+    with path.open() as f:
+        raw = yaml.safe_load(f)
+    return Stage2Config(**raw)

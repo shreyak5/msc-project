@@ -506,13 +506,18 @@ def build_category_dataset(
     with_flame = entry.category in CATEGORIES_3D
     with_mica = entry.category in CATEGORIES_2D
     with_landmarks = entry.category in CATEGORIES_2D
-    # Only 2D batches go through masking -> UNet -> photometric/VGG reconstruction
-    # (Sec 7 Pass A/C) - 3D batches get direct mesh/Lvc supervision instead, no
-    # rendering, so they never need the face-region mask. VideoFaceDataset itself
-    # always computes visibility_ratio unconditionally (TemporalTransformer needs
-    # it for every video category's clips in Pass C, 2D and 3D alike) - not
-    # gated by with_face_mask, which only controls the face_mask field.
-    with_face_mask = entry.category in CATEGORIES_2D
+    # face_mask is needed for ALL categories, not just CATEGORIES_2D: Pass A/C's
+    # masking -> UNet -> photometric/VGG reconstruction only touches 2D batches
+    # (3D batches get direct mesh/Lvc supervision, no rendering there), but
+    # Pass B (Sec 7's augmentation/cycle pass) explicitly treats 3D datasets'
+    # images as generic 2D images too ("3D datasets contribute their 2D images,
+    # meshes ignored") - since the same dataset instance is shared across
+    # passes (one frame_pool loader, consumed differently by A vs B), it can't
+    # know in advance which pass will touch a given category's batch, so this
+    # is unconditional rather than scoped. VideoFaceDataset's visibility_ratio
+    # is separately always-unconditional too (TemporalTransformer needs it for
+    # every video category's clips in Pass C, 2D and 3D alike).
+    with_face_mask = True
     if entry.category in IMAGE_CATEGORIES:
         return ImageFaceDataset(
             entry.name, entry.manifest_path, split, cfg.crop_cache_root,

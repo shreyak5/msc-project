@@ -12,9 +12,13 @@ rows contaminate the loss value for the samples that were actually valid.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, Iterator
 
 import torch
+
+from dataset_processing.dataloading.combined_loader import CombinedFaceLoader
+from model import constants
+from model.losses.regularization import l2_regularization
 
 
 def gated_loss(loss_fn: Callable[..., torch.Tensor], valid_mask: torch.Tensor, *tensors: torch.Tensor) -> torch.Tensor:
@@ -29,3 +33,53 @@ def gated_loss(loss_fn: Callable[..., torch.Tensor], valid_mask: torch.Tensor, *
         return torch.zeros((), device=tensors[0].device)
     filtered = [t[valid_mask] for t in tensors]
     return loss_fn(*filtered)
+
+
+def regularization_loss(encoded: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Shape/expression/jaw only (Sec 6: "L2 on expression parameters (and
+    standard FLAME param regularizers - shape, jaw)") - deliberately not camera:
+    zero isn't a sensible prior for scale (degenerate) or rotation (would bias
+    against genuinely non-frontal poses, which matter here given sign language
+    video's real head-orientation variation), unlike shape/expression's
+    zero-centered PCA coefficients where zero legitimately means "neutral".
+    Applied in every pass (Sec 6: "Regularization | ... | all passes")."""
+    return (
+        constants.REG_SHAPE_WEIGHT * l2_regularization(encoded["shape"])
+        + constants.REG_EXPRESSION_WEIGHT * l2_regularization(encoded["expression"])
+        + constants.REG_JAW_WEIGHT * l2_regularization(encoded["jaw"])
+    )
+
+
+def concat_category_fields(batch: dict, categories: list[str], keys: list[str], device: str) -> dict[str, torch.Tensor]:
+    """batch: one yielded step from CombinedFaceLoader (dict keyed by category
+    name). categories: which of that step's categories to combine (e.g.
+    ["2d_image", "2d_video"]) - safe to concatenate along the batch dimension
+    even though their configured batch_sizes differ (dataset_processing/config/
+    dataloader.yaml), and safe for 3D categories specifically because
+    IdentityAwareBatchSampler's identity pairs are already guaranteed within
+    each category's own batch before this concatenation ever happens - combining
+    afterward doesn't lose that guarantee, it just makes one bigger batch out of
+    two already-valid ones. Returns a flat dict (not nested by category) - each
+    key maps to one tensor spanning all combined samples, with the first
+    category's rows first, second category's rows after (torch.cat preserves
+    list order)."""
+    return {key: torch.cat([batch[category][key] for category in categories], dim=0).to(device) for key in keys}
+
+
+def next_batch(
+    loader: CombinedFaceLoader, iterator: Iterator[dict[str, Any]], epoch: int,
+) -> tuple[dict[str, Any], Iterator[dict[str, Any]], int]:
+    """Returns (batch, iterator, epoch) - the caller holds iterator/epoch as
+    loop state and passes them back in on the next call. Restarts the loader
+    (new epoch -> set_epoch -> fresh iterator, so DistributedSampler produces a
+    different shuffle) instead of raising StopIteration when the current
+    iterator runs dry - needed once training is measured in steps rather than
+    epochs (training/pretrain.py, training/stage2.py), since there's no outer
+    `for epoch in range(...)` loop left to trigger a restart automatically."""
+    try:
+        return next(iterator), iterator, epoch
+    except StopIteration:
+        epoch += 1
+        loader.set_epoch(epoch)
+        iterator = iter(loader)
+        return next(iterator), iterator, epoch

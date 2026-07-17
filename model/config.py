@@ -42,6 +42,9 @@ class TTConfig:
     mlp_ratio: float = constants.TT_MLP_RATIO
     m_values: tuple[float, ...] = constants.TT_BIAS_M_VALUES
     n_values: tuple[float, ...] = constants.TT_BIAS_N_VALUES
+    # Centred local-attention window (Sec 4.2): a query frame only attends to frames
+    # within window_size // 2 of itself. See model/temporal.py for how this is enforced.
+    window_size: int = constants.TT_WINDOW_SIZE
 
 
 @dataclasses.dataclass

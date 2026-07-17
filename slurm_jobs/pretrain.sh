@@ -32,7 +32,7 @@ srun bash -c '
     --rdzv_id='"$SLURM_JOB_ID"' \
     --rdzv_backend=c10d \
     --rdzv_endpoint='"$MASTER_ADDR:$MASTER_PORT"' \
-    training/pretrain.py --config '"$CONFIG"'
+    -m training.pretrain --config '"$CONFIG"'
 '
 
 echo "DONE!"
