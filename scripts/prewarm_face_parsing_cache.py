@@ -17,14 +17,16 @@ from dataset_processing.dataloading.registry import DEFAULT_DATASETS_YAML, load_
 from dataset_processing.dataloading.video_frames import make_frame_source  # noqa: E402
 from dataset_processing.manifest_schema import read_manifest  # noqa: E402
 
-IMAGE_CATEGORIES = {"2d_image"}
-# The face-region mask (masking -> UNet reconstruction, Sec 7 Pass A/C) only
-# applies to 2D categories - matches dataset_processing/dataloading/datasets.py's
-# CATEGORIES_2D. Visibility scores are different: TemporalTransformer needs them
-# for every video category's clips regardless of 2D/3D, so 3d_video is prewarmed
-# here too even though it never needs the mask half of this cache's output.
-# 3d_image needs neither and is excluded.
-PREWARM_CATEGORIES = {"2d_image", "2d_video", "3d_video"}
+IMAGE_CATEGORIES = {"2d_image", "3d_image"}
+# face_mask is needed for all 4 categories (Pass A/C's masking -> UNet
+# reconstruction touches 2D batches only, but Pass B explicitly treats 3D
+# datasets' images as generic 2D images too - "3D datasets contribute their 2D
+# images, meshes ignored" - see dataset_processing/dataloading/datasets.py's
+# build_category_dataset comment for the full reasoning). visibility_ratio is
+# only meaningful for the two video categories (TemporalTransformer, Pass C),
+# but since both fields come from one XSeg call, prewarming all 4 categories
+# together is simpler than trying to prewarm the two fields separately.
+PREWARM_CATEGORIES = {"2d_image", "2d_video", "3d_image", "3d_video"}
 
 
 def main():
