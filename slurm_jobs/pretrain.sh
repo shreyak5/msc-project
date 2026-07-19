@@ -15,6 +15,18 @@
 # processes on that node - a different topology from the prewarm jobs'
 # --ntasks-per-node=4, where srun launched one independent process per GPU
 # directly, with no torchrun layer.
+#
+# --gres=gpu:4 on srun itself (not just #SBATCH above) is required: on this
+# cluster, GRES from the job's own allocation does not automatically propagate
+# to an srun step - each step must request its own share. Confirmed via sacct
+# after a real failed run: the job's overall AllocTRES showed gres/gpu=16 (all
+# 4 nodes x 4 GPUs, correctly reserved), but the srun step itself only got
+# gres/gpu=1 total without this flag, leaving most of torchrun's spawned ranks
+# with no (or the wrong) GPU visible - "ProcessGroupNCCL ... no GPUs found" /
+# "CUDA error: invalid device ordinal". The prewarm jobs never hit this because
+# their one-task-per-GPU topology (--ntasks-per-node=4) happens to line up with
+# Slurm's default per-task GRES round-robin; this job's one-task-per-node
+# topology does not.
 
 PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
 CONFIG=training/config/pretrain.yaml
@@ -25,7 +37,7 @@ cd "$PROJECT_DIR"
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
-srun bash -c '
+srun --gres=gpu:4 bash -c '
   .venv/bin/torchrun \
     --nnodes='"$SLURM_NNODES"' \
     --nproc_per_node='"$GPUS_PER_NODE"' \

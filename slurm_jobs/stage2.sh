@@ -13,6 +13,13 @@
 # --ntasks-per-node=1 from this job's allocation, launching exactly 4
 # processes, one per node. Each runs torchrun --nproc_per_node=4 itself,
 # which spawns the 4 per-GPU worker processes on that node.
+#
+# --gres=gpu:4 on srun itself is required (see pretrain.sh's own comment for
+# the full explanation): GRES from the job's #SBATCH allocation does not
+# automatically propagate to an srun step on this cluster - confirmed via a
+# real failed pretrain.sh run, where sacct showed the job's overall
+# AllocTRES had gres/gpu=16 but the srun step itself only got gres/gpu=1
+# without this flag.
 
 PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
 CONFIG=training/config/stage2.yaml
@@ -23,7 +30,7 @@ cd "$PROJECT_DIR"
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
-srun bash -c '
+srun --gres=gpu:4 bash -c '
   .venv/bin/torchrun \
     --nnodes='"$SLURM_NNODES"' \
     --nproc_per_node='"$GPUS_PER_NODE"' \
