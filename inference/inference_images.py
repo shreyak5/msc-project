@@ -27,6 +27,7 @@ from utils.inference_utils import (  # noqa: E402
     build_models,
     crop_and_tensor,
     load_available_checkpoint,
+    run_flame,
     timestamped_out_dir,
 )
 
@@ -100,9 +101,7 @@ def process_batch(paths: list[str], models: dict, args: argparse.Namespace) -> i
 
     flame_out = None
     if args.save_vertices:
-        flame_out = models["flame"](
-            encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"],
-        )
+        flame_out, _camera = run_flame(models["flame"], encoded)
 
     for i, basename in enumerate(batch_basenames):
         save_sample(args.out_path, basename, encoded, i, flame_out)

@@ -10,15 +10,24 @@ from utils.landmark_utils import build_mediapipe_detector, build_fan_predictor, 
 
 from metrics import per_frame_euclidean_error, per_frame_vertex_error
 from methods.smirk_method import SmirkMethod
+from methods.ours_method import OursNoTemporalMethod, OursFullMethod
 
 METHOD_REGISTRY = {
     'smirk': SmirkMethod,
+    'ours_no_temporal': OursNoTemporalMethod,
+    'ours_full': OursFullMethod,
 }
 
 # Edit these lists to change which metrics / landmark sets run.
 METRICS = ['landmark', 'temporal_smoothness']
 # METRICS = ['temporal_smoothness']
 LANDMARK_SETS = ['fan', 'mediapipe']  # only used if 'landmark' in METRICS
+
+# GT-detection concern, identical regardless of which method (--method) is being
+# evaluated, so this is a fixed constant rather than a threaded parameter - the main
+# project's own copy of this asset (not SMIRK's baselines/smirk_experiments/ copy,
+# since GT detection doesn't depend on SMIRK).
+MEDIAPIPE_MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'face_landmarker.task')
 
 
 def result_keys():
@@ -40,13 +49,13 @@ class Evaluators:
     mediapipe_gt_indices: object
 
 
-def build_evaluators(method_name, device, crop_size, mediapipe_model_path):
+def build_evaluators(method_name, device, crop_size, crop_scale=1.4, checkpoint_path=None):
     method = METHOD_REGISTRY[method_name]()
-    method.setup(device, crop_size=crop_size)
+    method.setup(device, crop_size=crop_size, crop_scale=crop_scale, checkpoint_path=checkpoint_path)
 
     face_detector = build_retinaface_detector(device)
     fan_predictor = build_fan_predictor(device) if 'fan' in LANDMARK_SETS and 'landmark' in METRICS else None
-    mediapipe_detector = build_mediapipe_detector(mediapipe_model_path) \
+    mediapipe_detector = build_mediapipe_detector(MEDIAPIPE_MODEL_PATH) \
         if 'mediapipe' in LANDMARK_SETS and 'landmark' in METRICS else None
     mediapipe_gt_indices = method.mediapipe_gt_indices() \
         if 'mediapipe' in LANDMARK_SETS and 'landmark' in METRICS else None
@@ -54,8 +63,13 @@ def build_evaluators(method_name, device, crop_size, mediapipe_model_path):
     return Evaluators(method, face_detector, fan_predictor, mediapipe_detector, mediapipe_gt_indices)
 
 
-def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
-    """Runs the crop -> GT detect -> method.predict -> per-frame error loop over one clip's frames.
+def evaluate_clip(frames, crop_scale, crop_size, evaluators, clip_id, vis_writers=None):
+    """Runs the crop -> method.predict_video -> GT detect -> per-frame error loop over one clip's frames.
+
+    clip_id: a stable string naming this clip (e.g. its basename). Forwarded to
+    predict_video() - only meaningful for methods with real temporal/visibility
+    processing (e.g. TT-based ones caching their own visibility scoring per clip);
+    ignored by methods using the default predict_video() (SMIRK, ours_no_temporal).
 
     Returns a dict keyed by result_keys(): 'fan'/'mediapipe' arrays have one entry per
     frame (NaN where missing); 'temporal_smoothness' has one entry per consecutive
@@ -72,9 +86,13 @@ def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
     # RetinaFace call on the already-cropped image just to get FAN a box.
     fan_box = get_cropped_face_box(image_size=crop_size, scale=crop_scale)
 
-    for frame in frames:
-        cropped, _tform = crop_face(frame, evaluators.face_detector, scale=crop_scale, image_size=crop_size)
+    cropped_frames = [
+        crop_face(frame, evaluators.face_detector, scale=crop_scale, image_size=crop_size)[0]
+        for frame in frames
+    ]
+    preds = evaluators.method.predict_video(cropped_frames, frames, clip_id)
 
+    for cropped, pred in zip(cropped_frames, preds):
         if cropped is None:
             for name in landmark_sets:
                 errors[name].append(np.nan)
@@ -83,8 +101,6 @@ def evaluate_clip(frames, crop_scale, crop_size, evaluators, vis_writers=None):
             if track_mesh:
                 per_frame_vertices.append(None)
             continue
-
-        pred = evaluators.method.predict(cropped)
 
         if 'fan' in landmark_sets:
             gt_fan, _scores = run_fan(evaluators.fan_predictor, cropped, fan_box)

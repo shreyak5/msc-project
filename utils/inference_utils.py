@@ -32,7 +32,7 @@ from dataset_processing.dataloading.face_parsing_pool import get_xseg
 from model.encoder import SViT
 from model.farl_weights import load_farl_pretrained
 from model.flame.flame import FLAME
-from model.flame.renderer import Renderer
+from model.flame.renderer import Renderer, project_landmarks
 from model.generator import UNetGenerator
 from model.heads import ComponentHeads
 from model.temporal import TemporalTransformer
@@ -152,6 +152,33 @@ def compute_visibility_and_mask(
     )
     face_mask = torch.from_numpy(face_mask_np).unsqueeze(0).to(device)
     return face_mask, visibility_ratio, valid
+
+
+def run_flame(flame: FLAME, encoded: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """encoded: dict of decoded FLAME/camera params, each (B, ...) - the direct output
+    of model.encoding.encode_image/encode_video (post-squeeze for encode_video's clip
+    dim, post-chunking for demo_videos.py's render loop). Runs FLAME once (the same
+    5-arg call every consumer needs) and assembles the (B,3)=[scale,tx,ty] projection
+    camera Renderer.forward/project_landmarks both expect - callers that don't project
+    (inference_images.py/inference_videos.py's --save_vertices path) just ignore the
+    second return value; the torch.cat to build it is negligible either way.
+    Returns (flame_out, camera)."""
+    flame_out = flame(encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"])
+    camera = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
+    return flame_out, camera
+
+
+def decode_and_project(flame: FLAME, encoded: dict[str, torch.Tensor], crop_size: int) -> list[dict[str, np.ndarray]]:
+    """Builds on run_flame: also projects landmarks to crop-pixel space (mirrors
+    SmirkMethod's own projection convention) -> list of B per-sample {'fan': (68,2),
+    'mediapipe': (105,2), 'vertices': (V,3)} numpy dicts. Only evaluation needs this -
+    none of the four inference/*.py scripts currently project landmarks to 2D pixel
+    space (they either rasterize the mesh via Renderer, or save raw 3D FLAME output)."""
+    flame_out, camera = run_flame(flame, encoded)
+    fan_px = ((project_landmarks(flame_out["landmarks_fan"], camera) + 1) * (crop_size / 2)).cpu().numpy()
+    mp_px = ((project_landmarks(flame_out["landmarks_mp"], camera) + 1) * (crop_size / 2)).cpu().numpy()
+    vertices = flame_out["vertices"].cpu().numpy()
+    return [{"fan": fan_px[i], "mediapipe": mp_px[i], "vertices": vertices[i]} for i in range(vertices.shape[0])]
 
 
 def render_2d_reconstruction(

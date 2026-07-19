@@ -31,6 +31,7 @@ from utils.inference_utils import (  # noqa: E402
     load_available_checkpoint,
     make_panel,
     render_2d_reconstruction,
+    run_flame,
     shared_cache_root,
     tensor_to_uint8_rgb,
     timestamped_out_dir,
@@ -94,10 +95,7 @@ def main() -> None:
             raise RuntimeError(f"XSeg face-parsing failed for {args.input_path}")
 
     encoded = encode_image(models["svit"], models["heads"], pixel_values)
-    flame_out = models["flame"](
-        encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"],
-    )
-    cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
+    flame_out, cam_for_proj = run_flame(models["flame"], encoded)
 
     panels = [cropped_rgb]
 

@@ -36,6 +36,7 @@ from utils.inference_utils import (  # noqa: E402
     load_available_checkpoint,
     make_panel,
     render_2d_reconstruction,
+    run_flame,
     shared_cache_root,
     tensor_to_uint8_rgb,
     timestamped_out_dir,
@@ -141,10 +142,7 @@ def main() -> None:
     for start in range(0, num_frames, RENDER_CHUNK_SIZE):
         end = min(start + RENDER_CHUNK_SIZE, num_frames)
         chunk = {name: value[start:end] for name, value in encoded.items()}
-        flame_out = models["flame"](
-            chunk["shape"], chunk["expression"], chunk["jaw"], chunk["eyelid"], chunk["rotation"],
-        )
-        cam_for_proj = torch.cat([chunk["scale"], chunk["translation"]], dim=-1)
+        flame_out, cam_for_proj = run_flame(models["flame"], chunk)
 
         mesh_frames = None
         if args.render_mesh:

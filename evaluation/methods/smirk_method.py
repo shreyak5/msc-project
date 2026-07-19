@@ -18,7 +18,7 @@ SMIRK_CHECKPOINT = 'baselines/smirk_experiments/pretrained_models/SMIRK_em1.pt'
 
 
 class SmirkMethod(ReconstructionMethod):
-    def setup(self, device, crop_size=224):
+    def setup(self, device, crop_size=224, crop_scale=1.4, checkpoint_path=None):
         self.device = device
         self.crop_size = crop_size
 
@@ -45,9 +45,6 @@ class SmirkMethod(ReconstructionMethod):
             self.smirk_encoder.eval()
 
             self.flame = FLAME().to(device)
-
-            mp_embedding = np.load('assets/mediapipe_landmark_embedding/mediapipe_landmark_embedding.npz')
-            self.landmark_indices = mp_embedding['landmark_indices']
         finally:
             os.chdir(original_cwd)
 
@@ -59,10 +56,9 @@ class SmirkMethod(ReconstructionMethod):
         return (projected + 1) * (self.crop_size / 2)
 
     @torch.no_grad()
-    def predict(self, cropped_bgr_image):
-        image = cv2.cvtColor(cropped_bgr_image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (224, 224))
-        image_tensor = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    def predict_frames(self, cropped_bgr_frames):
+        images = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2RGB), (224, 224)) for f in cropped_bgr_frames]
+        image_tensor = torch.tensor(np.stack(images)).permute(0, 3, 1, 2).float() / 255.0
         image_tensor = image_tensor.to(self.device)
 
         outputs = self.smirk_encoder(image_tensor)
@@ -71,11 +67,10 @@ class SmirkMethod(ReconstructionMethod):
         fan_pixels = self._project_to_pixels(flame_output['landmarks_fan'], outputs['cam'])
         mp_pixels = self._project_to_pixels(flame_output['landmarks_mp'], outputs['cam'])
 
-        return {
-            'fan': fan_pixels[0].cpu().numpy(),
-            'mediapipe': mp_pixels[0].cpu().numpy(),
-            'vertices': flame_output['vertices'][0].cpu().numpy(),
-        }
-
-    def mediapipe_gt_indices(self):
-        return self.landmark_indices
+        fan_pixels = fan_pixels.cpu().numpy()
+        mp_pixels = mp_pixels.cpu().numpy()
+        vertices = flame_output['vertices'].cpu().numpy()
+        return [
+            {'fan': fan_pixels[i], 'mediapipe': mp_pixels[i], 'vertices': vertices[i]}
+            for i in range(len(cropped_bgr_frames))
+        ]

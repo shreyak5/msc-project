@@ -12,9 +12,7 @@ from metrics import summarize
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from preprocessing.io import load_frames  # noqa: E402
-
-DEFAULT_MEDIAPIPE_MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'baselines', 'smirk_experiments', 'assets', 'face_landmarker.task')
+from utils.inference_utils import timestamped_out_dir  # noqa: E402
 
 VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
 
@@ -43,9 +41,10 @@ def main():
     parser.add_argument('--device', type=str, default='cuda', help='Device to run detectors/method on')
     parser.add_argument('--crop_scale', type=float, default=1.4, help='Crop scale factor relative to the detected face box')
     parser.add_argument('--crop_size', type=int, default=224, help='Output crop size (square)')
-    parser.add_argument('--mediapipe_model_path', type=str, default=DEFAULT_MEDIAPIPE_MODEL_PATH,
-                         help='Path to the MediaPipe face_landmarker.task asset')
     parser.add_argument('--method', type=str, default='smirk', choices=sorted(METHOD_REGISTRY.keys()))
+    parser.add_argument('--checkpoint', type=str, default=None,
+                         help='Optional trained checkpoint for the selected method; omit to sanity-test '
+                              'the untrained model (ignored by --method smirk, which uses its own fixed checkpoint)')
     parser.add_argument('--output_dir', type=str, default='evaluation/output_dataset',
                          help='Directory to save results.csv, skipped_videos.txt and summary.json')
     parser.add_argument('--num_shards', type=int, default=1,
@@ -56,20 +55,21 @@ def main():
 
     keys = result_keys()
 
-    output_dir = args.output_dir
+    output_dir = timestamped_out_dir(args.output_dir)
     if args.num_shards > 1:
-        output_dir = os.path.join(args.output_dir, f'shard_{args.shard_index}')
-    os.makedirs(output_dir, exist_ok=True)
+        output_dir = os.path.join(output_dir, f'shard_{args.shard_index}')
+        os.makedirs(output_dir, exist_ok=True)
 
-    evaluators = build_evaluators(args.method, args.device, args.crop_size, args.mediapipe_model_path)
+    evaluators = build_evaluators(args.method, args.device, args.crop_size,
+                                   crop_scale=args.crop_scale, checkpoint_path=args.checkpoint)
 
     all_clips = list_clips(args.input_dir, args.image_seq)
     clips = all_clips[args.shard_index::args.num_shards]
     total = len(clips)
     print(f'Found {len(all_clips)} clips in {args.input_dir}, shard {args.shard_index}/{args.num_shards} handles {total}')
 
-    results_path = os.path.join(output_dir, 'results.csv')
-    skipped_path = os.path.join(output_dir, 'skipped_videos.txt')
+    results_path = os.path.join(output_dir, f'{args.method}_results.csv')
+    skipped_path = os.path.join(output_dir, f'{args.method}_skipped_videos.txt')
 
     fieldnames = ['name'] + [f'{name}_mean' for name in keys] + [f'{name}_std' for name in keys] + \
         [f'{name}_valid_frames' for name in keys] + [f'{name}_total_frames' for name in keys]
@@ -91,7 +91,7 @@ def main():
                 frames, _video_fps, _input_name = load_frames(clip_path, args.image_seq, args.fps)
                 if not frames:
                     raise ValueError('no frames found')
-                errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators)
+                errors = evaluate_clip(frames, args.crop_scale, args.crop_size, evaluators, name)
                 clip_summary = {name_: summarize(errors[name_]) for name_ in keys}
             except Exception as e:
                 num_skipped += 1
@@ -146,7 +146,7 @@ def main():
         'overall_std': overall_std,
         'elapsed_seconds': elapsed_seconds,
     }
-    summary_path = os.path.join(output_dir, 'summary.json')
+    summary_path = os.path.join(output_dir, f'{args.method}_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
 

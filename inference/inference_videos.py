@@ -41,6 +41,7 @@ from utils.inference_utils import (  # noqa: E402
     compute_visibility_and_mask,
     crop_and_tensor,
     load_available_checkpoint,
+    run_flame,
     shared_cache_root,
     timestamped_out_dir,
 )
@@ -180,10 +181,7 @@ def process_group(videos: list[dict], models: dict, args: argparse.Namespace) ->
 
         flame_out = None
         if args.save_vertices:
-            flame_out = models["flame"](
-                real_params["shape"], real_params["expression"], real_params["jaw"],
-                real_params["eyelid"], real_params["rotation"],
-            )
+            flame_out, _camera = run_flame(models["flame"], real_params)
 
         save_video_sample(args.out_path, video["video_name"], real_params, flame_out)
         print(f"[ok] {video['video_name']} ({video['num_frames']} frames)")
