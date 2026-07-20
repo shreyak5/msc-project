@@ -611,10 +611,14 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
             # (because that pass froze them) would hang or error under
             # multi-GPU training. Stage 1 never needed this - svit/heads were
             # always fully trainable there, no per-step freezing at all.
-            svit = DistributedDataParallel(svit, device_ids=[local_rank], find_unused_parameters=True)
-            heads = DistributedDataParallel(heads, device_ids=[local_rank], find_unused_parameters=True)
-            unet = DistributedDataParallel(unet, device_ids=[local_rank], find_unused_parameters=True)
-            tt = DistributedDataParallel(tt, device_ids=[local_rank], find_unused_parameters=True)
+            # device_ids=[0], not [local_rank]: setup_distributed now restricts
+            # CUDA_VISIBLE_DEVICES to exactly this rank's own GPU, so every
+            # process's own device is always index 0 in its own restricted view,
+            # regardless of local_rank's original torchrun-assigned value.
+            svit = DistributedDataParallel(svit, device_ids=[0], find_unused_parameters=True)
+            heads = DistributedDataParallel(heads, device_ids=[0], find_unused_parameters=True)
+            unet = DistributedDataParallel(unet, device_ids=[0], find_unused_parameters=True)
+            tt = DistributedDataParallel(tt, device_ids=[0], find_unused_parameters=True)
 
         dataloader_cfg = load_dataloader_config(cfg.dataloader_config_path)
         frame_pool_loader = build_combined_loader(

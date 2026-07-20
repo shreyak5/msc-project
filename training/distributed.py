@@ -31,9 +31,25 @@ def setup_distributed(fallback_device: str) -> tuple[int, int, int, str]:
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
 
+    # Restrict CUDA visibility to exactly this rank's own GPU, before any CUDA
+    # context is created (including inside dist.init_process_group's NCCL
+    # backend) - this makes a bare "cuda" (no index) unambiguous everywhere in
+    # this rank's whole process tree, INCLUDING DataLoader worker subprocesses
+    # forked later, which inherit this env var. Without this, a bare "cuda"
+    # always resolves to physical GPU 0 regardless of which rank a worker
+    # belongs to - a confirmed real bug (dataloader.yaml's mica_device: cuda,
+    # consumed by mica_pool.get_mica inside DataLoader workers) that piled
+    # dozens of worker processes' allocations onto GPU 0 alone until it OOM'd,
+    # crashing exactly every local_rank-0 process (global ranks 0, 4, 8, 12 on
+    # a 4-node/4-GPU job) - the one rank per node where GPU 0 is both its own
+    # legitimate training GPU and every misconfigured worker's dumping ground.
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    devices = visible.split(",") if visible else [str(i) for i in range(torch.cuda.device_count())]
+    os.environ["CUDA_VISIBLE_DEVICES"] = devices[local_rank]
+
     dist.init_process_group(backend="nccl")
-    torch.cuda.set_device(local_rank)
-    return rank, world_size, local_rank, f"cuda:{local_rank}"
+    torch.cuda.set_device(0)  # only one GPU visible now - always index 0
+    return rank, world_size, local_rank, "cuda:0"
 
 
 def cleanup_distributed() -> None:

@@ -107,8 +107,12 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
             start_step = loaded_step + 1
 
         if is_distributed():
-            svit = DistributedDataParallel(svit, device_ids=[local_rank])
-            heads = DistributedDataParallel(heads, device_ids=[local_rank])
+            # device_ids=[0], not [local_rank]: setup_distributed now restricts
+            # CUDA_VISIBLE_DEVICES to exactly this rank's own GPU, so every
+            # process's own device is always index 0 in its own restricted view,
+            # regardless of local_rank's original torchrun-assigned value.
+            svit = DistributedDataParallel(svit, device_ids=[0])
+            heads = DistributedDataParallel(heads, device_ids=[0])
 
         dataloader_cfg = load_dataloader_config(cfg.dataloader_config_path)
         loader = build_combined_loader(
