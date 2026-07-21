@@ -246,19 +246,33 @@ def run_pass_a(
     for p in list(svit.parameters()) + list(heads.parameters()) + list(unet.parameters()):
         p.requires_grad_(True)
 
+    optimizer.zero_grad()
+
+    # 2D branch first: forward, then BOTH its backwards (main + the emotion
+    # carve-out), fully completed before the 3D branch's forward is even
+    # built - keeps only one branch's reconstruction graph (Renderer/UNet/VGG
+    # activations, held open across both backwards by retain_graph=True)
+    # resident in memory at a time, rather than building both the 2D and 3D
+    # forward graphs simultaneously before either backward runs. Confirmed via
+    # a real GPU OOM at production batch size: Pass A's 2D branch alone (full
+    # photometric+VGG+UNet reconstruction, retained for the emotion double-
+    # backward) is categorically heavier than Stage 1's equivalent, which
+    # never needed retain_graph at all - see training/pretrain.py's
+    # compute_2d_losses. Splitting the backward this way changes nothing
+    # about what gets optimized: backward() accumulates into .grad rather
+    # than overwriting it, so two sequential backward() calls before one
+    # optimizer.step() produce the exact same accumulated gradient as one
+    # combined backward on the summed loss - only peak memory differs.
     loss_2d_excl_emotion, emotion_term, metrics_2d = compute_2d_reconstruction_losses(
         svit, heads, flame, renderer, unet, emotion_net, vgg_loss, face_probabilities, batch_2d,
     )
-    loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
-
-    main_loss = constants.LOSS_BALANCE_2D * loss_2d_excl_emotion + constants.LOSS_BALANCE_3D * loss_3d
+    loss_2d_scaled = constants.LOSS_BALANCE_2D * loss_2d_excl_emotion
     emotion_loss_scaled = constants.LOSS_BALANCE_2D * constants.EMOTION_LOSS_WEIGHT * emotion_term
 
-    optimizer.zero_grad()
     # retain_graph=True: the UNet's output tensor (and everything upstream of
     # it - UNet, FLAME, encoder) is reused by emotion_loss_scaled's backward
     # below, so the graph can't be freed after this first call.
-    main_loss.backward(retain_graph=True)
+    loss_2d_scaled.backward(retain_graph=True)
 
     unet_params = list(unet.parameters())
     for p in unet_params:
@@ -266,16 +280,24 @@ def run_pass_a(
     # emotion_term is gated by flag_face_mask_valid - if EVERY sample in
     # batch_2d happens to be invalid, it's a disconnected zero tensor with no
     # grad_fn (same edge case already handled in run_pass_b), and calling
-    # backward() on it would crash. main_loss doesn't have this problem (its
-    # own regularization term is ungated, always grad-connected).
+    # backward() on it would crash. loss_2d_scaled doesn't have this problem
+    # (its own regularization term is ungated, always grad-connected).
     if emotion_loss_scaled.requires_grad:
         emotion_loss_scaled.backward()
     for p in unet_params:
         p.requires_grad_(True)
 
+    # 3D branch: forward + backward only now, after the 2D branch's graph has
+    # been fully backpropped (both calls above) and freed. compute_3d_losses'
+    # own regularization term is likewise always ungated/grad-connected
+    # (training/losses_3d.py), so no requires_grad guard is needed here either.
+    loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
+    loss_3d_scaled = constants.LOSS_BALANCE_3D * loss_3d
+    loss_3d_scaled.backward()
+
     optimizer.step()
 
-    total = main_loss.item() + emotion_loss_scaled.item()
+    total = loss_2d_scaled.item() + emotion_loss_scaled.item() + loss_3d_scaled.item()
     metrics = {"total": total, "2d": metrics_2d, "3d": metrics_3d}
     return metrics
 
@@ -495,40 +517,71 @@ def run_pass_c(
     """One Pass C training step. Only TT updates - svit/heads/unet are
     explicitly frozen at entry (same defensive requires_grad_ pattern as Pass
     A/B), but still run forward (see module docstring: frozen doesn't mean
-    skipped, gradient still flows through them to reach TT). A single combined
-    backward suffices (unlike Pass A): every loss term here shares the same
-    single "only TT updates" gradient path, no differential freezing needed.
+    skipped, gradient still flows through them to reach TT).
 
-    2d_video and 3d_video are concatenated into ONE encode_video call (both
-    are already clip-shaped with the same max_frames, per dataloader.yaml) -
-    mirrors Pass A's same-shape-category concatenation pattern - then split
-    back apart by category boundary for the category-specific losses."""
+    2d_video and 3d_video get their OWN separate encode_video calls (unlike an
+    earlier version of this function, which concatenated them into one) -
+    required to actually reduce peak memory, not just reorder compute:
+    retain_graph=True is all-or-nothing (keeps the ENTIRE graph reachable from
+    whatever backward() was called on, not just "the shared part"), so a
+    single combined encode_video call would force loss_2d's own heavy
+    Renderer/UNet/VGG/EmotionNet graph to stay resident for as long as
+    loss_3d/loss_temporal still need the shared encoded tensor to backward
+    through - defeating any memory benefit (confirmed via a real GPU OOM in
+    Pass A's structurally similar case; see run_pass_a's own docstring). Two
+    separate (redundant but comparatively cheap) SViT+TT+heads forward passes
+    buys a real reduction: the two categories' HEAVY reconstruction graphs are
+    never resident simultaneously.
+
+    Backward order matters for correctness here, not just memory: loss_temporal
+    is computed by concatenating encoded_2d+encoded_3d back together - exactly
+    reproducing the original single pooled masked-mean acceleration_penalty/
+    velocity_penalty aggregation across BOTH categories combined (model/losses/
+    temporal_smoothness.py's own denominator is a single pooled valid-term
+    count) - splitting that computation per-category and adding the two means
+    back together would NOT be equivalent, since each category can contribute
+    a different number of valid terms. loss_temporal is backwarded FIRST, with
+    retain_graph=True - cheap to retain at this point, since neither
+    category's heavy reconstruction graph has been built yet. Only THEN are
+    loss_2d and loss_3d each built and backwarded (no retain_graph needed for
+    either - nothing needs their specific graphs again afterward), one at a
+    time, so at no point are both heavy per-category graphs resident
+    together."""
     for p in list(svit.parameters()) + list(heads.parameters()) + list(unet.parameters()):
         p.requires_grad_(False)
     for p in tt.parameters():
         p.requires_grad_(True)
 
-    batch_size_2d = batch_2d_video["pixel_values"].shape[0]
     num_frames = batch_2d_video["pixel_values"].shape[1]
     device = batch_2d_video["pixel_values"].device
     assert batch_3d_video["pixel_values"].shape[1] == num_frames, (
         "2d_video and 3d_video categories must share the same clip length (dataloader.yaml's max_frames)"
     )
 
-    clip_pixel_values = torch.cat([batch_2d_video["pixel_values"], batch_3d_video["pixel_values"]], dim=0)
-    visibility_scores = torch.cat([batch_2d_video["visibility_ratio"], batch_3d_video["visibility_ratio"]], dim=0)
-    flag_visibility_valid = torch.cat([batch_2d_video["flag_visibility_valid"], batch_3d_video["flag_visibility_valid"]], dim=0)
-    real_frame_mask = torch.cat([batch_2d_video["valid_mask"], batch_3d_video["valid_mask"]], dim=0)
-    batch_size_total = real_frame_mask.shape[0]
-    frame_indices = torch.arange(num_frames, device=device).unsqueeze(0).expand(batch_size_total, -1)
+    def _encode_category(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        batch_size = batch["pixel_values"].shape[0]
+        frame_indices = torch.arange(num_frames, device=device).unsqueeze(0).expand(batch_size, -1)
+        return encode_video(
+            svit, tt, heads, batch["pixel_values"], batch["visibility_ratio"],
+            frame_indices, batch["flag_visibility_valid"], batch["valid_mask"],
+        )
 
-    encoded = encode_video(
-        svit, tt, heads, clip_pixel_values, visibility_scores, frame_indices, flag_visibility_valid, real_frame_mask,
-    )
-    encoded_2d = {k: v[:batch_size_2d] for k, v in encoded.items()}
-    encoded_3d = {k: v[batch_size_2d:] for k, v in encoded.items()}
-    real_frame_mask_2d = real_frame_mask[:batch_size_2d]
-    real_frame_mask_3d = real_frame_mask[batch_size_2d:]
+    encoded_2d = _encode_category(batch_2d_video)
+    encoded_3d = _encode_category(batch_3d_video)
+    real_frame_mask_2d = batch_2d_video["valid_mask"]
+    real_frame_mask_3d = batch_3d_video["valid_mask"]
+
+    optimizer.zero_grad()
+
+    # Temporal smoothness first: needs both categories combined to reproduce
+    # the exact original pooled aggregation (see docstring above).
+    encoded_combined = {k: torch.cat([encoded_2d[k], encoded_3d[k]], dim=0) for k in encoded_2d}
+    real_frame_mask_combined = torch.cat([real_frame_mask_2d, real_frame_mask_3d], dim=0)
+    loss_temporal, metrics_temporal = compute_temporal_smoothness_losses(encoded_combined, real_frame_mask_combined)
+    # retain_graph=True: encoded_2d/encoded_3d's own graphs are still needed
+    # by loss_2d/loss_3d's backwards below - cheap to retain here, since
+    # neither category's heavy reconstruction graph has been built yet.
+    loss_temporal.backward(retain_graph=True)
 
     # Regularization is NOT computed separately here: compute_2d_video_losses
     # already includes its own (via the shared _compute_2d_reconstruction_
@@ -539,17 +592,16 @@ def run_pass_c(
     loss_2d, metrics_2d = compute_2d_video_losses(
         flame, renderer, unet, emotion_net, vgg_loss, face_probabilities, encoded_2d, batch_2d_video, real_frame_mask_2d,
     )
+    loss_2d.backward()
+
     loss_3d, metrics_3d = compute_3d_video_losses(flame, region_weights, encoded_3d, batch_3d_video, real_frame_mask_3d)
-    loss_temporal, metrics_temporal = compute_temporal_smoothness_losses(encoded, real_frame_mask)
+    loss_3d.backward()
 
-    total_loss = loss_2d + loss_3d + loss_temporal
-
-    optimizer.zero_grad()
-    total_loss.backward()
     optimizer.step()
 
+    total_loss = loss_2d.item() + loss_3d.item() + loss_temporal.item()
     metrics = {
-        "total": total_loss.item(), "2d": metrics_2d, "3d": metrics_3d, "temporal": metrics_temporal,
+        "total": total_loss, "2d": metrics_2d, "3d": metrics_3d, "temporal": metrics_temporal,
     }
     return metrics
 
