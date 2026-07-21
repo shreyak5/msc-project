@@ -18,17 +18,17 @@ detector:
 
 categories:
   2d_image:
-    batch_size: 128
+    batch_size: 64
     max_frames: 1
     num_workers: 8
     drop_last: true
   2d_video:
-    batch_size: 8
+    batch_size: 4
     max_frames: 32
     num_workers: 8
     drop_last: true
   3d_image:
-    batch_size: 128
+    batch_size: 64
     max_frames: 1
     num_workers: 4
     drop_last: true

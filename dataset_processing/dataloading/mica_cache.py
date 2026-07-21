@@ -59,8 +59,14 @@ def get_mica_shape(
         return fallback, False
 
     if npy_path.exists():
-        shape = np.load(npy_path)
-        return shape, True
+        try:
+            shape = np.load(npy_path)
+            return shape, True
+        except Exception as exc:
+            # Corrupted/truncated cache entry - treat like a cache miss and
+            # recompute live below, self-healing rather than crashing (see
+            # face_parsing_cache.py's get_face_parsing for the full reasoning).
+            print(f"warning: corrupted cache entry {npy_path}, recomputing: {exc}")
 
     try:
         image = load_source_image()

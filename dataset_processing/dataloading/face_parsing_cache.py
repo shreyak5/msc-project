@@ -62,8 +62,17 @@ def get_face_parsing(
         return mask_fallback, 0.0, False
 
     if npz_path.exists():
-        cached = np.load(npz_path)
-        return cached["face_mask"], float(cached["visibility_ratio"]), True
+        try:
+            cached = np.load(npz_path)
+            return cached["face_mask"], float(cached["visibility_ratio"]), True
+        except Exception as exc:
+            # Corrupted/truncated cache entry (e.g. left behind by an earlier
+            # abruptly-killed job, or a rename-visibility race on a shared
+            # parallel filesystem under heavy concurrent access from many
+            # worker processes) - treat like a cache miss and recompute live
+            # below, rewriting the file - self-healing rather than crashing
+            # the whole training job over one bad cache entry.
+            print(f"warning: corrupted cache entry {npz_path}, recomputing: {exc}")
 
     try:
         image = load_source_image()

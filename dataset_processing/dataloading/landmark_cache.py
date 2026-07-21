@@ -89,13 +89,19 @@ def get_landmarks(
     mp_fallback = np.zeros((len(_CURATED_MEDIAPIPE_INDICES), 2), dtype=np.float32)
 
     if npz_path.exists():
-        cached = np.load(npz_path)
-        return {
-            "landmarks_fan": cached["landmarks_fan"],
-            "flag_landmarks_fan_valid": bool(cached["flag_landmarks_fan_valid"]),
-            "landmarks_mp": cached["landmarks_mp"],
-            "flag_landmarks_mp_valid": bool(cached["flag_landmarks_mp_valid"]),
-        }
+        try:
+            cached = np.load(npz_path)
+            return {
+                "landmarks_fan": cached["landmarks_fan"],
+                "flag_landmarks_fan_valid": bool(cached["flag_landmarks_fan_valid"]),
+                "landmarks_mp": cached["landmarks_mp"],
+                "flag_landmarks_mp_valid": bool(cached["flag_landmarks_mp_valid"]),
+            }
+        except Exception as exc:
+            # Corrupted/truncated cache entry - treat like a cache miss and
+            # recompute live below, self-healing rather than crashing (see
+            # face_parsing_cache.py's get_face_parsing for the full reasoning).
+            print(f"warning: corrupted cache entry {npz_path}, recomputing: {exc}")
 
     try:
         crop = get_cropped_face(
