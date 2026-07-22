@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import cv2
+import torch
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,6 +38,14 @@ def main():
     args = parser.parse_args()
 
     cfg = load_dataloader_config(args.dataloader_config)
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"--device={args.device} requested but torch.cuda.is_available() is False "
+            f"(SLURM_LOCALID={os.environ.get('SLURM_LOCALID')}, "
+            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}) - "
+            "this shard has no GPU bound. Check srun's own --gres flag rather than "
+            "letting every row silently fail (see slurm_jobs/prewarm_landmark_cache.sh)."
+        )
     entries = [e for e in load_datasets_yaml(args.datasets_yaml) if e.category in CATEGORIES_2D]
     if args.dataset != "all":
         entries = [entry for entry in entries if entry.name == args.dataset]

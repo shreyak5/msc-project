@@ -6,6 +6,7 @@
 #SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
 
 PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
@@ -14,7 +15,7 @@ NUM_SHARDS=16
 
 cd "$PROJECT_DIR"
 
-srun --ntasks="$NUM_SHARDS" bash -c '
+srun --ntasks="$NUM_SHARDS" --gres=gpu:4 bash -c '
   export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
   .venv/bin/python scripts/prewarm_mica_cache.py \
     --dataloader_config '"$DATALOADER_CONFIG"' \

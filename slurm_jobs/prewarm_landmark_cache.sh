@@ -6,6 +6,7 @@
 #SBATCH --ntasks=72
 #SBATCH --ntasks-per-node=72
 #SBATCH --gres=gpu:4
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00
 
 # 72 tasks, not 4: the node has 288 CPUs but this job only ever had cgroup
@@ -19,7 +20,7 @@ NUM_SHARDS=72
 
 cd "$PROJECT_DIR"
 
-srun --ntasks="$NUM_SHARDS" bash -c '
+srun --ntasks="$NUM_SHARDS" --gres=gpu:4 bash -c '
   export CUDA_VISIBLE_DEVICES=$((SLURM_LOCALID % 4))
   .venv/bin/python scripts/prewarm_landmark_cache.py \
     --dataloader_config '"$DATALOADER_CONFIG"' \
