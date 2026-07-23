@@ -17,9 +17,12 @@ needs."""
 
 from __future__ import annotations
 
+import multiprocessing
 import os
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -36,7 +39,7 @@ from model.flame.renderer import Renderer, project_landmarks
 from model.generator import UNetGenerator
 from model.heads import ComponentHeads
 from model.temporal import TemporalTransformer
-from preprocessing.cropping import crop_face
+from preprocessing.cropping import crop_face, crop_face_with_landmarks
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FARL_CHECKPOINT_PATH = _REPO_ROOT / "pretrained_weights/farl/FaRL-Base-Patch16-LAIONFace20M-ep64.pth"
@@ -152,6 +155,189 @@ def compute_visibility_and_mask(
     )
     face_mask = torch.from_numpy(face_mask_np).unsqueeze(0).to(device)
     return face_mask, visibility_ratio, valid
+
+
+def _crop_and_parse_np(
+    image_bgr: np.ndarray,
+    detector,
+    cache_root: str,
+    sample_id: str,
+    frame_index: int | None,
+    xseg_device: str,
+    crop_scale: float,
+    image_size: int,
+) -> tuple[np.ndarray | None, np.ndarray, float, bool]:
+    """Numpy-only core: one detection feeding both the model's crop and
+    XSeg's mask, via crop_face_with_landmarks + get_face_parsing's
+    precomputed_crop param (instead of letting get_face_parsing re-detect
+    internally, which is the redundant-detector-call this was written to
+    avoid). Shared by crop_tensor_and_compute_xseg_mask (non-pooled callers,
+    which add device placement on top) and the process-pool worker below
+    (which can't return CUDA tensors across a process boundary anyway, so it
+    needs this numpy form regardless). Returns (cropped_rgb | None, face_mask,
+    visibility_ratio, valid); cropped_rgb is None only when no face was
+    detected, in which case get_face_parsing is still called (with
+    precomputed_crop=None) so it runs and caches its own detection attempt -
+    a second detector call, but only on that rare no-face frame."""
+    cropped_bgr, _tform, landmarks_5pt_crop, box_crop = crop_face_with_landmarks(
+        image_bgr, detector, scale=crop_scale, image_size=image_size,
+    )
+
+    cropped_rgb, precomputed_crop = None, None
+    if cropped_bgr is not None:
+        cropped_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
+        precomputed_crop = (cropped_bgr, landmarks_5pt_crop, box_crop)
+
+    face_mask, visibility_ratio, valid = get_face_parsing(
+        cache_root, "inference", sample_id, frame_index,
+        lambda: image_bgr,
+        lambda: detector,
+        lambda: get_xseg(xseg_device),
+        crop_scale, image_size,
+        precomputed_crop=precomputed_crop,
+    )
+    return cropped_rgb, face_mask, visibility_ratio, valid
+
+
+def crop_tensor_and_compute_xseg_mask(
+    image_bgr: np.ndarray,
+    detector,
+    cache_root: str,
+    sample_id: str,
+    frame_index: int | None,
+    xseg_device: str,
+    crop_scale: float,
+    image_size: int,
+    device: str,
+) -> tuple[torch.Tensor | None, np.ndarray | None, torch.Tensor, float, bool]:
+    """Non-pooled replacement for separately calling crop_and_tensor +
+    compute_visibility_and_mask (which each ran their own independent
+    detector pass on the same frame) - thin device-placement wrapper around
+    _crop_and_parse_np. Returns (pixel_values, cropped_rgb, face_mask,
+    visibility_ratio, valid); pixel_values/cropped_rgb are None if no face
+    was detected, matching crop_and_tensor's own no-face contract."""
+    cropped_rgb, face_mask_np, visibility_ratio, valid = _crop_and_parse_np(
+        image_bgr, detector, cache_root, sample_id, frame_index, xseg_device, crop_scale, image_size,
+    )
+    pixel_values = None
+    if cropped_rgb is not None:
+        pixel_values = torch.from_numpy(cropped_rgb).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
+    face_mask = torch.from_numpy(face_mask_np).unsqueeze(0).to(device)
+    return pixel_values, cropped_rgb, face_mask, visibility_ratio, valid
+
+
+class FrameJob(NamedTuple):
+    """One frame's worth of work for the CPU-bound crop+XSeg process pool
+    (see run_parallel_crop_and_parse). video_key identifies which video/image
+    a result belongs to once results come back, since a group of many videos'
+    frames are flattened into one job list for even load-balancing across
+    workers (video lengths vary, so one-worker-per-video would leave short
+    videos idling while others are still decoding)."""
+
+    video_key: str
+    frame_index: int
+    frame_bgr: np.ndarray
+    sample_id: str
+    cache_root: str
+    crop_scale: float
+    image_size: int
+
+
+class FrameResult(NamedTuple):
+    video_key: str
+    frame_index: int
+    cropped_rgb: np.ndarray | None
+    face_mask: np.ndarray
+    visibility_ratio: float
+    valid: bool
+
+
+def _pool_worker_crop_and_parse(job: FrameJob) -> FrameResult:
+    """ProcessPoolExecutor worker: runs one frame's detect+crop+XSeg entirely
+    on CPU via _crop_and_parse_np. Always CPU, regardless of what device the
+    main process's own models are on - onnxruntime has no CUDA execution
+    provider in this environment for XSeg regardless, and a GPU RetinaFace
+    wouldn't actually parallelize across many pool *processes* sharing one
+    physical GPU (separate CUDA contexts contending for one device, no MPS
+    set up here), so there's nothing to gain by not also keeping the detector
+    CPU-side here - RetinaFace's mobilenet0.25 backbone is a lightweight,
+    real-time-on-CPU detector by design. Builds its own detector/XSeg via the
+    same lazy-per-process-singleton pools (detector_pool.get_detector,
+    face_parsing_pool.get_xseg) scripts/prewarm_face_parsing_cache.py's own
+    --num_shards workers already rely on - each pool worker process pays
+    that construction cost exactly once, on its first job."""
+    detector = get_detector("cpu", DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME)
+    cropped_rgb, face_mask, visibility_ratio, valid = _crop_and_parse_np(
+        job.frame_bgr, detector, job.cache_root, job.sample_id, job.frame_index,
+        "cpu", job.crop_scale, job.image_size,
+    )
+    return FrameResult(job.video_key, job.frame_index, cropped_rgb, face_mask, visibility_ratio, valid)
+
+
+_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def _init_pool_worker() -> None:
+    """ProcessPoolExecutor initializer - runs once per worker process, before
+    it takes any jobs. Belt-and-suspenders on top of the env vars
+    make_crop_parse_pool sets in the parent (those cover numpy/torch/cv2's
+    *BLAS-backend* threading, read at library-load time inside each freshly
+    spawned interpreter - this covers OpenCV's own separate thread pool,
+    which isn't OMP_NUM_THREADS-governed, and pins torch explicitly in case
+    anything already imported it before reading the env)."""
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
+
+
+def make_crop_parse_pool(num_workers: int) -> ProcessPoolExecutor:
+    """Creates the shared pool inference_videos.py/demo_videos.py create once
+    in main() and reuse across every video/group, rather than paying process
+    startup cost repeatedly. Explicitly uses the 'spawn' start method, not
+    this platform's 'fork' default: by the time this is called, the calling
+    script has already loaded torch models onto the GPU (build_models), and
+    CUDA does not support being inherited across a fork - a forked worker
+    that touches anything CUDA-adjacent (even indirectly, via importing torch
+    modules that lazily touch it) can hang or crash. spawn re-imports each
+    worker fresh instead, which is the only combination that's safe here.
+
+    Also pins every worker to single-threaded BLAS/OpenMP, same reasoning as
+    uniface/onnx_utils.py's own intra_op_num_threads=1 (this project's
+    parallelism model throughout is "many single-threaded workers", never
+    "N processes each also fanning out internally") - without this, each of
+    N spawned processes independently imports numpy/torch/cv2, each of which
+    sizes its own thread pool off the *node's full core count* by default;
+    multiplied by num_workers processes this exhausts a shared HPC node's
+    max-user-processes ulimit almost immediately (observed here: `libgomp:
+    Thread creation failed` / BrokenProcessPool with a 1900 ulimit -u and 32
+    workers). Setting os.environ here, in the parent, before spawning is
+    required for it to take effect - each child is a fresh interpreter that
+    reads these at its own numpy/torch import time, inheriting whatever the
+    parent's environ held at spawn time; setting them any later (e.g. inside
+    the worker itself, after those libraries already imported) would be too
+    late for the BLAS backends that read the env var only once at load."""
+    for var in _THREAD_LIMIT_ENV_VARS:
+        os.environ[var] = "1"
+    return ProcessPoolExecutor(
+        max_workers=num_workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_init_pool_worker,
+    )
+
+
+def run_parallel_crop_and_parse(jobs: list[FrameJob], executor: ProcessPoolExecutor) -> list[FrameResult]:
+    """Submits already-decoded frames to `executor` for the CPU-bound
+    detect+crop+XSeg work and returns FrameResults in the same order as
+    `jobs` (executor.map preserves submission order). Frames are decoded
+    sequentially up front by the caller (cv2.VideoCapture, as before this
+    change) rather than having each worker seek into the video itself -
+    VideoFileFrameSource.read_frame's seek falls back to a full
+    from-scratch redecode whenever it lands off-target (codec/keyframe
+    dependent), which scattered per-frame random access across many workers
+    could hit constantly."""
+    return list(executor.map(_pool_worker_crop_and_parse, jobs))
 
 
 def run_flame(flame: FLAME, encoded: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], torch.Tensor]:

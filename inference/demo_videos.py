@@ -23,20 +23,18 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dataset_processing.dataloading.detector_pool import get_detector  # noqa: E402
 from model.encoding import encode_video  # noqa: E402
 from model.flame.masking import load_probabilities_per_flame_triangle  # noqa: E402
 from preprocessing.io import load_frames  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
-    DETECTOR_MODEL_NAME,
-    DETECTOR_THRESHOLD,
+    FrameJob,
     build_models,
-    compute_visibility_and_mask,
-    crop_and_tensor,
     load_available_checkpoint,
+    make_crop_parse_pool,
     make_panel,
     render_2d_reconstruction,
     run_flame,
+    run_parallel_crop_and_parse,
     shared_cache_root,
     tensor_to_uint8_rgb,
     timestamped_out_dir,
@@ -59,13 +57,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional trained checkpoint; omit to sanity-test the untrained model.",
     )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
-    parser.add_argument("--detector_device", type=str, default="cpu")
     parser.add_argument("--xseg_device", type=str, default="cpu")
     parser.add_argument("--out_path", type=str, default="inference/output/demo")
     parser.add_argument("--render_mesh", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--render_2d_recon", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--crop_scale", type=float, default=1.4)
     parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument(
+        "--num_workers", type=int, default=min(32, os.cpu_count() or 1),
+        help="Process-pool workers for the CPU-bound detect+crop+XSeg step (see utils/inference_utils.py).",
+    )
     return parser.parse_args()
 
 
@@ -88,36 +89,42 @@ def main() -> None:
         raise ValueError(f"No frames found at {args.input_path}")
     num_frames = len(frames)
 
-    detector = get_detector(args.detector_device, DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME)
+    jobs = [
+        FrameJob(video_name, i, frame_bgr, video_name, cache_root, args.crop_scale, args.image_size)
+        for i, frame_bgr in enumerate(frames)
+    ]
+    executor = make_crop_parse_pool(args.num_workers)
+    try:
+        results = run_parallel_crop_and_parse(jobs, executor)
+    finally:
+        executor.shutdown()
+    results_by_frame = {result.frame_index: result for result in results}
 
+    # visibility_ratio/face_mask both come from the same XSeg call (Sec 4.1's
+    # visibility score IS the XSeg-derived ratio) - needed unconditionally for
+    # TT's visibility_scores input, not just when --render_2d_recon is set.
     pixel_values_list, cropped_rgb_list, visibility_list, valid_list, face_mask_list = [], [], [], [], []
-    for frame_index, frame_bgr in enumerate(frames):
-        pixel_values, cropped_rgb = crop_and_tensor(
-            frame_bgr, detector, args.crop_scale, args.image_size, args.device,
-        )
-        # visibility_ratio/face_mask both come from the same XSeg call (Sec 4.1's
-        # visibility score IS the XSeg-derived ratio) - needed unconditionally for
-        # TT's visibility_scores input, not just when --render_2d_recon is set.
-        face_mask, visibility_ratio, valid = compute_visibility_and_mask(
-            frame_bgr, cache_root, video_name, frame_index, args.detector_device, args.xseg_device,
-            args.crop_scale, args.image_size, args.device,
-        )
-        frame_valid = valid and pixel_values is not None
-        if not frame_valid:
+    for frame_index in range(num_frames):
+        result = results_by_frame[frame_index]
+        frame_valid = result.valid and result.cropped_rgb is not None
+        if frame_valid:
+            pixel_values = torch.from_numpy(result.cropped_rgb).permute(2, 0, 1).float().to(args.device) / 255.0
+            cropped_rgb = result.cropped_rgb
+        else:
             # RetinaFace/XSeg failed for this frame - fall back to a black frame,
             # matching training's own crop-cache fallback (batched ops can't skip
             # individual samples); the frame gets discarded via encode_video's own
             # missing-frame token averaging once flag_visibility_valid=False below.
-            pixel_values = torch.zeros(1, 3, args.image_size, args.image_size, device=args.device)
+            pixel_values = torch.zeros(3, args.image_size, args.image_size, device=args.device)
             cropped_rgb = np.zeros((args.image_size, args.image_size, 3), dtype=np.uint8)
 
         pixel_values_list.append(pixel_values)
         cropped_rgb_list.append(cropped_rgb)
-        visibility_list.append(visibility_ratio)
+        visibility_list.append(result.visibility_ratio)
         valid_list.append(frame_valid)
-        face_mask_list.append(face_mask)
+        face_mask_list.append(torch.from_numpy(result.face_mask).unsqueeze(0).to(args.device))
 
-    clip_pixel_values = torch.stack([p.squeeze(0) for p in pixel_values_list], dim=0).unsqueeze(0)
+    clip_pixel_values = torch.stack(pixel_values_list, dim=0).unsqueeze(0)
     # dtype=torch.float32 explicit: torch.tensor() on a list of plain Python floats
     # defaults to float64, which nn.MultiheadAttention's fused attention kernel
     # rejects outright (attn_mask dtype must exactly match the query tensor's dtype).

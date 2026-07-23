@@ -22,12 +22,10 @@ import argparse
 import os
 import sys
 
-import cv2
 import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dataset_processing.dataloading.detector_pool import get_detector  # noqa: E402
 from dataset_processing.dataloading.video_frames import (  # noqa: E402
     frame_indices_for_segment,
     valid_mask_for_segment,
@@ -35,13 +33,12 @@ from dataset_processing.dataloading.video_frames import (  # noqa: E402
 from model.encoding import encode_video  # noqa: E402
 from preprocessing.io import load_frames  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
-    DETECTOR_MODEL_NAME,
-    DETECTOR_THRESHOLD,
+    FrameJob,
     build_models,
-    compute_visibility_and_mask,
-    crop_and_tensor,
     load_available_checkpoint,
+    make_crop_parse_pool,
     run_flame,
+    run_parallel_crop_and_parse,
     shared_cache_root,
     timestamped_out_dir,
 )
@@ -58,7 +55,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input_path", type=str, required=True, help="Directory of video files.")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
-    parser.add_argument("--detector_device", type=str, default="cpu")
     parser.add_argument("--xseg_device", type=str, default="cpu")
     parser.add_argument("--out_path", type=str, default="inference/output/videos")
     parser.add_argument(
@@ -67,6 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crop_scale", type=float, default=1.4)
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=4, help="Number of VIDEOS per encode_video call.")
+    parser.add_argument(
+        "--num_workers", type=int, default=min(32, os.cpu_count() or 1),
+        help="Process-pool workers for the CPU-bound detect+crop+XSeg step (see utils/inference_utils.py).",
+    )
     return parser.parse_args()
 
 
@@ -77,47 +77,77 @@ def gather_video_paths(input_path: str) -> list[str]:
     return [os.path.join(input_path, f) for f in files]
 
 
-def encode_one_video(video_path: str, detector, cache_root: str, args: argparse.Namespace) -> dict:
-    """Reads a video and detects+crops+scores every frame independently (no
-    cross-frame tracking - matches how training treats missing/degraded
-    frames). Returns per-frame lists, NOT yet padded/batched/encoded - encoding
-    happens once per group of videos in main(), after padding to a common
-    length."""
+def load_video_frames(video_path: str) -> tuple[list[np.ndarray], str]:
+    """Sequential decode only (unchanged from before this change) - no
+    detection/cropping here, that now happens via the process pool in
+    process_video_group below."""
     frames, _fps, video_name = load_frames(video_path, image_seq=False, fps=30)
     if not frames:
         raise ValueError(f"No frames found in {video_path}")
+    return frames, video_name
+
+
+def assemble_video_from_results(
+    video_name: str, num_frames: int, results: list, args: argparse.Namespace,
+) -> dict:
+    """Turns one video's FrameResults (from the process pool, keyed by
+    frame_index) into the same per-video dict shape this script always fed
+    into pad_video/process_group. visibility_ratio is kept unconditionally
+    for TT's visibility_scores input (Sec 4.1) - this script never renders,
+    so results' cropped_rgb is only used to build pixel_values, not kept."""
+    by_frame = {result.frame_index: result for result in results}
 
     pixel_values_list, visibility_list, valid_list = [], [], []
-    for frame_index, frame_bgr in enumerate(frames):
-        pixel_values, _cropped_rgb = crop_and_tensor(
-            frame_bgr, detector, args.crop_scale, args.image_size, args.device,
-        )
-        # visibility_ratio is needed unconditionally for TT's visibility_scores
-        # input (Sec 4.1) - the accompanying face_mask isn't used here at all,
-        # since inference never renders (see compute_visibility_and_mask's
-        # docstring: both come from the same XSeg call regardless).
-        _face_mask, visibility_ratio, valid = compute_visibility_and_mask(
-            frame_bgr, cache_root, video_name, frame_index, args.detector_device, args.xseg_device,
-            args.crop_scale, args.image_size, args.device,
-        )
-        frame_valid = valid and pixel_values is not None
-        if not frame_valid:
+    for frame_index in range(num_frames):
+        result = by_frame[frame_index]
+        frame_valid = result.valid and result.cropped_rgb is not None
+        if frame_valid:
+            pixel_values = torch.from_numpy(result.cropped_rgb).permute(2, 0, 1).float().to(args.device) / 255.0
+        else:
             # Matches training's own crop-cache fallback (batched ops can't skip
             # individual samples) - discarded via encode_video's missing-frame
             # token averaging once flag_visibility_valid=False is set below.
-            pixel_values = torch.zeros(1, 3, args.image_size, args.image_size, device=args.device)
+            pixel_values = torch.zeros(3, args.image_size, args.image_size, device=args.device)
 
-        pixel_values_list.append(pixel_values.squeeze(0))
-        visibility_list.append(visibility_ratio)
+        pixel_values_list.append(pixel_values)
+        visibility_list.append(result.visibility_ratio)
         valid_list.append(frame_valid)
 
     return {
         "video_name": video_name,
-        "num_frames": len(frames),
+        "num_frames": num_frames,
         "pixel_values": pixel_values_list,
         "visibility": visibility_list,
         "valid": valid_list,
     }
+
+
+def process_video_group(video_paths_group: list[str], cache_root: str, executor, args: argparse.Namespace) -> list[dict]:
+    """Decodes every video in this group (sequential per-video, as before),
+    then flattens ALL of their frames into one job list submitted to the
+    shared pool in a single call - balances load evenly across workers
+    regardless of each video's individual length, rather than one worker per
+    video (which would leave short videos idling while others are still
+    being processed)."""
+    decoded = [load_video_frames(path) for path in video_paths_group]
+
+    jobs: list[FrameJob] = []
+    for frames, video_name in decoded:
+        jobs.extend(
+            FrameJob(video_name, i, frame_bgr, video_name, cache_root, args.crop_scale, args.image_size)
+            for i, frame_bgr in enumerate(frames)
+        )
+
+    results = run_parallel_crop_and_parse(jobs, executor)
+
+    results_by_video: dict[str, list] = {}
+    for result in results:
+        results_by_video.setdefault(result.video_key, []).append(result)
+
+    return [
+        assemble_video_from_results(video_name, len(frames), results_by_video[video_name], args)
+        for frames, video_name in decoded
+    ]
 
 
 def pad_video(video: dict, max_frames: int) -> dict:
@@ -199,14 +229,21 @@ def main() -> None:
     if not video_paths:
         raise ValueError(f"No videos found at {args.input_path}")
 
-    detector = get_detector(args.detector_device, DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME)
-    videos = [encode_one_video(path, detector, cache_root, args) for path in video_paths]
-
-    for start in range(0, len(videos), args.batch_size):
-        process_group(videos[start : start + args.batch_size], models, args)
+    # Created once and reused for every group below - pool startup (spawning
+    # args.num_workers processes) is real overhead, not worth paying per group.
+    executor = make_crop_parse_pool(args.num_workers)
+    try:
+        num_videos = 0
+        for start in range(0, len(video_paths), args.batch_size):
+            group_paths = video_paths[start : start + args.batch_size]
+            videos = process_video_group(group_paths, cache_root, executor, args)
+            process_group(videos, models, args)
+            num_videos += len(videos)
+    finally:
+        executor.shutdown()
 
     status = f"checkpoint step {step}" if step is not None else "no checkpoint - sanity test"
-    print(f"\nProcessed {len(videos)} videos ({status}). Saved outputs to {args.out_path}")
+    print(f"\nProcessed {num_videos} videos ({status}). Saved outputs to {args.out_path}")
 
 
 if __name__ == "__main__":

@@ -26,8 +26,8 @@ from utils.inference_utils import (  # noqa: E402
     DETECTOR_MODEL_NAME,
     DETECTOR_THRESHOLD,
     build_models,
-    compute_visibility_and_mask,
     crop_and_tensor,
+    crop_tensor_and_compute_xseg_mask,
     load_available_checkpoint,
     make_panel,
     render_2d_reconstruction,
@@ -80,19 +80,26 @@ def main() -> None:
     if image_bgr is None:
         raise FileNotFoundError(f"Failed to read image: {args.input_path}")
 
-    pixel_values, cropped_rgb = crop_and_tensor(image_bgr, detector, args.crop_scale, args.image_size, args.device)
-    if pixel_values is None:
-        raise RuntimeError(f"No face detected in {args.input_path}")
-
     face_mask = None
     if args.render_2d_recon:
+        # Single detection feeding both the model's pixel_values crop and XSeg's
+        # mask (crop_tensor_and_compute_xseg_mask), instead of crop_and_tensor +
+        # compute_visibility_and_mask separately detecting the same image twice.
+        # Only reached when this branch actually needs XSeg - the else below
+        # still skips it entirely, same as before this change.
         sample_id = os.path.splitext(os.path.basename(args.input_path))[0]
-        face_mask, _visibility_ratio, valid = compute_visibility_and_mask(
-            image_bgr, cache_root, sample_id, None, args.detector_device, args.xseg_device,
-            args.crop_scale, args.image_size, args.device,
+        pixel_values, cropped_rgb, face_mask, _visibility_ratio, valid = crop_tensor_and_compute_xseg_mask(
+            image_bgr, detector, cache_root, sample_id, None,
+            args.xseg_device, args.crop_scale, args.image_size, args.device,
         )
+        if pixel_values is None:
+            raise RuntimeError(f"No face detected in {args.input_path}")
         if not valid:
             raise RuntimeError(f"XSeg face-parsing failed for {args.input_path}")
+    else:
+        pixel_values, cropped_rgb = crop_and_tensor(image_bgr, detector, args.crop_scale, args.image_size, args.device)
+        if pixel_values is None:
+            raise RuntimeError(f"No face detected in {args.input_path}")
 
     encoded = encode_image(models["svit"], models["heads"], pixel_values)
     flame_out, cam_for_proj = run_flame(models["flame"], encoded)
