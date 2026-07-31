@@ -62,10 +62,10 @@ tail-padding, which Pass A never needed since its batches are never padded).
 Temporal smoothness is computed on encode_video's DECODED per-frame FLAME/
 camera params (after ComponentHeads, not on raw pre-head tokens) - directly on
 the (B,N,...) shape, before any flattening, since it needs the time axis:
-acceleration penalty on expression+eyelid, jaw, and camera scale+rotation;
-velocity penalty on shape - using the newly valid_mask-aware acceleration_
-penalty/velocity_penalty (model/losses/temporal_smoothness.py) so a difference
-spanning into tail-padding never contaminates the loss.
+a velocity penalty, applied uniformly to expression+eyelid, jaw, camera
+scale+rotation, and shape - using the valid_mask-aware velocity_penalty
+(model/losses/temporal_smoothness.py) so a difference spanning into
+tail-padding never contaminates the loss.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ from model.losses.landmark import eye_closure_loss, fan_boundary_loss, lip_closu
 from model.losses.mesh import build_region_weights, region_weighted_mesh_loss
 from model.losses.mica_shape import mica_shape_loss
 from model.losses.photometric import VGGPerceptualLoss, photometric_loss
-from model.losses.temporal_smoothness import acceleration_penalty, velocity_penalty
+from model.losses.temporal_smoothness import velocity_penalty
 from model.temporal import TemporalTransformer
 from training.checkpoint import load_checkpoint, save_checkpoint
 from training.config import Stage2Config, load_stage2_config
@@ -107,6 +107,7 @@ _REPO_ROOT_RELATIVE_FARL_PATH = "pretrained_weights/farl/FaRL-Base-Patch16-LAION
 def _render_and_reconstruct(
     flame: FLAME, renderer: Renderer, unet: UNetGenerator, face_probabilities: torch.Tensor,
     encoded: dict[str, torch.Tensor], pixel_values: torch.Tensor, face_mask: torch.Tensor,
+    valid_recon: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Shared mask -> sample 1% pixels -> UNet reconstruction path (Sec 7 Pass
     A/C): given already-encoded FLAME params (from encode_image or, after
@@ -115,7 +116,19 @@ def _render_and_reconstruct(
     projected_fan, projected_mp). Pass A's compute_2d_reconstruction_losses and
     Pass C's compute_2d_video_losses both call this rather than duplicating it -
     they differ in which losses they compute from `reconstructed`, not in how
-    it's produced."""
+    it's produced.
+
+    valid_recon: (B,) bool - batch_2d["flag_face_mask_valid"]. flame/renderer
+    still run over the FULL batch (projected_fan/projected_mp are needed
+    regardless - landmark losses are gated by their own, separately-diverging
+    validity flags, not this one). But mesh_based_mask_uniform_faces/masking/
+    unet only run on valid_recon rows: an invalid row's encoded FLAME/camera
+    params are never supervised (no detected face -> no photometric/VGG/
+    emotion gradient reaches them), so they can come out numerically extreme
+    and crash mesh_based_mask_uniform_faces's torch.multinomial call - and
+    their `reconstructed` output is unused anyway, since photometric/VGG/
+    emotion losses already gate on this same flag. Non-valid rows come back
+    as zeros in `reconstructed`, never read by the gated losses."""
     cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
 
     flame_out = flame(encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"])
@@ -123,20 +136,23 @@ def _render_and_reconstruct(
         flame_out["vertices"], cam_for_proj,
         landmarks_fan=flame_out["landmarks_fan"], landmarks_mp=flame_out["landmarks_mp"],
     )
-    rendered_img = render_out["rendered_img"]
     projected_fan = render_out["transformed_landmarks_fan"]
     projected_mp = render_out["transformed_landmarks_mp"]
 
-    npoints, _coords = mesh_based_mask_uniform_faces(render_out["transformed_vertices"], flame.faces_tensor, face_probabilities)
-    extra_points = transfer_pixels(pixel_values, npoints, npoints)
-    # masking()'s `mask` is 1=background/keep, 0=face/blackout-candidate - the
-    # OPPOSITE polarity from face_parsing_cache's face_mask (XSeg's own
-    # convention: 1=visible face skin, 0=background), hence the inversion.
-    background_mask = 1 - face_mask.unsqueeze(1)
-    masked_img = masking(pixel_values, background_mask, extra_points)
+    reconstructed = torch.zeros_like(pixel_values)
+    if valid_recon.any():
+        npoints, _coords = mesh_based_mask_uniform_faces(
+            render_out["transformed_vertices"][valid_recon], flame.faces_tensor, face_probabilities,
+        )
+        extra_points = transfer_pixels(pixel_values[valid_recon], npoints, npoints)
+        # masking()'s `mask` is 1=background/keep, 0=face/blackout-candidate -
+        # the OPPOSITE polarity from face_parsing_cache's face_mask (XSeg's own
+        # convention: 1=visible face skin, 0=background), hence the inversion.
+        background_mask = 1 - face_mask[valid_recon].unsqueeze(1)
+        masked_img = masking(pixel_values[valid_recon], background_mask, extra_points)
 
-    unet_input = torch.cat([rendered_img, masked_img], dim=1)
-    reconstructed = unet(unet_input)
+        unet_input = torch.cat([render_out["rendered_img"][valid_recon], masked_img], dim=1)
+        reconstructed[valid_recon] = unet(unet_input)
     return reconstructed, projected_fan, projected_mp
 
 
@@ -170,11 +186,12 @@ def _compute_2d_reconstruction_losses_from_encoded(
     degenerate - training the reconstruction path against that would be
     training against garbage, not a real supervision signal, so those rows are
     excluded the same way an invalid landmark/MICA target already would be."""
+    valid_recon = batch_2d["flag_face_mask_valid"]
     reconstructed, projected_fan, projected_mp = _render_and_reconstruct(
         flame, renderer, unet, face_probabilities, encoded, batch_2d["pixel_values"], batch_2d["face_mask"],
+        valid_recon,
     )
 
-    valid_recon = batch_2d["flag_face_mask_valid"]
     photometric = gated_loss(photometric_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
     vgg = gated_loss(vgg_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
     emotion_term = gated_loss(
@@ -308,39 +325,61 @@ def compute_cycle_losses(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Pass B's augmentation/cycle loss. batch combines ALL FOUR categories'
     pixel_values/face_mask/flag_face_mask_valid into one undifferentiated image
-    batch (see module docstring) - there's no 2D/3D split here, unlike Pass A."""
+    batch (see module docstring) - there's no 2D/3D split here, unlike Pass A.
+
+    The render -> sample -> mask -> UNet chain below only runs on
+    flag_face_mask_valid rows (valid_recon), same reasoning as
+    _render_and_reconstruct: an invalid row's encoded FLAME/camera params are
+    never supervised (no detected face), so they can come out numerically
+    extreme and crash mesh_based_mask_uniform_faces's torch.multinomial call -
+    and unlike Pass A/C, nothing else in this pass needs an invalid row's
+    render output (no separate landmark loss here), so it's sliced out
+    upstream of FLAME/the renderer entirely rather than only at the very end."""
     encoded = encode_image(svit, heads, batch["pixel_values"])
     cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
-
-    flame_out = flame(encoded["shape"], encoded["expression"], encoded["jaw"], encoded["eyelid"], encoded["rotation"])
-    # Only transformed_vertices is needed from the pre-augmentation pose (to
-    # sample which mesh points/triangles to track) - transform_vertices avoids
-    # the full Renderer's (wasted) rasterization of an image that's never used,
-    # since only the post-augmentation pose's rendered_img feeds the UNet below.
-    transformed_vertices = transform_vertices(flame_out["vertices"], cam_for_proj)
-    npoints1, coords = mesh_based_mask_uniform_faces(transformed_vertices, flame.faces_tensor, face_probabilities)
 
     aug_expression, aug_jaw, aug_eyelid = augment_expression_cycle(
         encoded["expression"], encoded["jaw"], encoded["eyelid"], templates,
     )
 
-    flame_out_aug = flame(encoded["shape"], aug_expression, aug_jaw, aug_eyelid, encoded["rotation"])
-    render_out_aug = renderer(flame_out_aug["vertices"], cam_for_proj)
-    # coords=coords: resamples the SAME mesh points/triangles npoints1 came
-    # from, now re-projected after the augmented re-pose - required for
-    # transfer_pixels below to know where each real pixel value should move to.
-    npoints2, _coords = mesh_based_mask_uniform_faces(
-        render_out_aug["transformed_vertices"], flame.faces_tensor, face_probabilities, coords=coords,
-    )
+    valid_recon = batch["flag_face_mask_valid"]
+    reconstructed = torch.zeros_like(batch["pixel_values"])
+    if valid_recon.any():
+        encoded_v = {k: v[valid_recon] for k, v in encoded.items()}
+        cam_for_proj_v = cam_for_proj[valid_recon]
 
-    extra_points = transfer_pixels(batch["pixel_values"], npoints1, npoints2)
-    # Same mask-polarity inversion as Pass A (masking()'s mask is 1=background/
-    # keep, 0=face/blackout - the opposite of face_parsing_cache's face_mask).
-    background_mask = 1 - batch["face_mask"].unsqueeze(1)
-    masked_img = masking(batch["pixel_values"], background_mask, extra_points)
+        flame_out = flame(
+            encoded_v["shape"], encoded_v["expression"], encoded_v["jaw"], encoded_v["eyelid"],
+            encoded_v["rotation"],
+        )
+        # Only transformed_vertices is needed from the pre-augmentation pose (to
+        # sample which mesh points/triangles to track) - transform_vertices avoids
+        # the full Renderer's (wasted) rasterization of an image that's never used,
+        # since only the post-augmentation pose's rendered_img feeds the UNet below.
+        transformed_vertices = transform_vertices(flame_out["vertices"], cam_for_proj_v)
+        npoints1, coords = mesh_based_mask_uniform_faces(transformed_vertices, flame.faces_tensor, face_probabilities)
 
-    unet_input = torch.cat([render_out_aug["rendered_img"], masked_img], dim=1)
-    reconstructed = unet(unet_input)
+        aug_expression_v, aug_jaw_v, aug_eyelid_v = (
+            aug_expression[valid_recon], aug_jaw[valid_recon], aug_eyelid[valid_recon],
+        )
+
+        flame_out_aug = flame(encoded_v["shape"], aug_expression_v, aug_jaw_v, aug_eyelid_v, encoded_v["rotation"])
+        render_out_aug = renderer(flame_out_aug["vertices"], cam_for_proj_v)
+        # coords=coords: resamples the SAME mesh points/triangles npoints1 came
+        # from, now re-projected after the augmented re-pose - required for
+        # transfer_pixels below to know where each real pixel value should move to.
+        npoints2, _coords = mesh_based_mask_uniform_faces(
+            render_out_aug["transformed_vertices"], flame.faces_tensor, face_probabilities, coords=coords,
+        )
+
+        extra_points = transfer_pixels(batch["pixel_values"][valid_recon], npoints1, npoints2)
+        # Same mask-polarity inversion as Pass A (masking()'s mask is 1=background/
+        # keep, 0=face/blackout - the opposite of face_parsing_cache's face_mask).
+        background_mask = 1 - batch["face_mask"][valid_recon].unsqueeze(1)
+        masked_img = masking(batch["pixel_values"][valid_recon], background_mask, extra_points)
+
+        unet_input = torch.cat([render_out_aug["rendered_img"], masked_img], dim=1)
+        reconstructed[valid_recon] = unet(unet_input)
 
     re_encoded = encode_image(svit, heads, reconstructed)
 
@@ -351,7 +390,6 @@ def compute_cycle_losses(
     # degenerates into copying the input back out rather than the intended
     # geometry+sparse-pixels task. Re-encoding that degenerate reconstruction
     # would otherwise feed a meaningless value into these losses.
-    valid_recon = batch["flag_face_mask_valid"]
     expr_cycle = gated_loss(
         expression_cycle_loss, valid_recon,
         re_encoded["expression"], aug_expression, re_encoded["jaw"], aug_jaw, re_encoded["eyelid"], aug_eyelid,
@@ -481,29 +519,24 @@ def compute_3d_video_losses(
 def compute_temporal_smoothness_losses(
     encoded: dict[str, torch.Tensor], real_frame_mask: torch.Tensor,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Sec 6: acceleration penalty (permits genuine motion, penalizes only
-    jitter) on expression+eyelid, jaw, and camera scale+rotation; velocity
-    penalty (near-constant within a video) on shape. Computed on encode_video's
-    DECODED per-frame params directly ((B,N,...), before any flattening - needs
-    the time axis to diff across), using the valid_mask-aware acceleration_
-    penalty/velocity_penalty (model/losses/temporal_smoothness.py) so a
-    difference spanning into tail-padding never contaminates the loss."""
+    """Sec 6: velocity penalty (L1, discourages frame-to-frame jumps) applied
+    uniformly to expression+eyelid, jaw, camera scale+rotation, and shape.
+    Computed on encode_video's DECODED per-frame params directly ((B,N,...),
+    before any flattening - needs the time axis to diff across), using the
+    valid_mask-aware velocity_penalty (model/losses/temporal_smoothness.py) so
+    a difference spanning into tail-padding never contaminates the loss."""
     expr_eyelid = torch.cat([encoded["expression"], encoded["eyelid"]], dim=-1)
     camera_rotation = torch.cat([encoded["scale"], encoded["rotation"]], dim=-1)
 
-    accel_expr = acceleration_penalty(expr_eyelid, real_frame_mask)
-    accel_jaw = acceleration_penalty(encoded["jaw"], real_frame_mask)
-    accel_camera = acceleration_penalty(camera_rotation, real_frame_mask)
+    vel_expr = velocity_penalty(expr_eyelid, real_frame_mask)
+    vel_jaw = velocity_penalty(encoded["jaw"], real_frame_mask)
+    vel_camera = velocity_penalty(camera_rotation, real_frame_mask)
     vel_shape = velocity_penalty(encoded["shape"], real_frame_mask)
 
-    acceleration_total = accel_expr + accel_jaw + accel_camera
-    total = (
-        constants.TEMPORAL_ACCELERATION_WEIGHT * acceleration_total
-        + constants.TEMPORAL_SHAPE_VELOCITY_WEIGHT * vel_shape
-    )
+    total = constants.TEMPORAL_VELOCITY_WEIGHT * (vel_expr + vel_jaw + vel_camera + vel_shape)
     metrics = {
-        "accel_expr": accel_expr.item(), "accel_jaw": accel_jaw.item(),
-        "accel_camera": accel_camera.item(), "vel_shape": vel_shape.item(),
+        "vel_expr": vel_expr.item(), "vel_jaw": vel_jaw.item(),
+        "vel_camera": vel_camera.item(), "vel_shape": vel_shape.item(),
     }
     return total, metrics
 
@@ -535,8 +568,8 @@ def run_pass_c(
 
     Backward order matters for correctness here, not just memory: loss_temporal
     is computed by concatenating encoded_2d+encoded_3d back together - exactly
-    reproducing the original single pooled masked-mean acceleration_penalty/
-    velocity_penalty aggregation across BOTH categories combined (model/losses/
+    reproducing the original single pooled masked-mean velocity_penalty
+    aggregation across BOTH categories combined (model/losses/
     temporal_smoothness.py's own denominator is a single pooled valid-term
     count) - splitting that computation per-category and adding the two means
     back together would NOT be equivalent, since each category can contribute
@@ -773,11 +806,11 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 2 training (implementation-plan.md Sec 7).")
     parser.add_argument("--config", type=str, default="training/config/stage2.yaml")
-    parser.add_argument("--checkpoint_pth", type=str, default=None, help="Resume Stage 2's own training from this checkpoint file")
     args = parser.parse_args()
 
     cfg = load_stage2_config(args.config)
-    train(cfg, checkpoint_pth=args.checkpoint_pth)
+    train(cfg, checkpoint_pth=cfg.checkpoint_pth)
+    print("Training done!")
 
 
 if __name__ == "__main__":

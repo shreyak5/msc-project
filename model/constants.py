@@ -263,14 +263,14 @@ PHOTOMETRIC_LOSS_WEIGHT = 1.0
 VGG_LOSS_WEIGHT = 10.0
 
 # Temporal smoothness (model/losses/temporal_smoothness.py), Stage 2 Pass C
-# only. Sec 6 weights paragraph: "For losses with no published anchor,
-# starting guesses ...: temporal smoothness - acceleration term 1.0, shape
-# velocity term 1.0 (keep smoothness weights low initially and raise only if
-# jitter persists; over-weighting damps mouthings)." acceleration_penalty
-# applies to expression/eyelid, jaw, and camera+global-rotation params;
-# velocity_penalty applies to shape only (see Sec 6's loss table).
-TEMPORAL_ACCELERATION_WEIGHT = 1.0
-TEMPORAL_SHAPE_VELOCITY_WEIGHT = 1.0
+# only. velocity_penalty (L1, mean absolute first difference) applies
+# uniformly to expression/eyelid, jaw, camera+global-rotation, and shape
+# params (see Sec 6's loss table). Originally 1.0, lowered 10x after
+# observing Stage 2 training collapse to a near-fixed mesh: the prior
+# acceleration+L2 formulation's quadratic growth on real motion, combined with
+# this weight, over-suppressed genuine expressiveness (keep smoothness weight
+# low and raise only if jitter persists; over-weighting damps mouthings).
+TEMPORAL_VELOCITY_WEIGHT = 0.1
 
 # GT landmark precompute (dataset_processing/dataloading/landmark_cache.py, Sec
 # 5.3). MediaPipe's own FaceLandmarker model asset - a data file (not code),
