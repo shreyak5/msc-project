@@ -185,14 +185,26 @@ def _compute_2d_reconstruction_losses_from_encoded(
     face has an all-zero face_mask fallback, which would make masking()'s output
     degenerate - training the reconstruction path against that would be
     training against garbage, not a real supervision signal, so those rows are
-    excluded the same way an invalid landmark/MICA target already would be."""
+    excluded the same way an invalid landmark/MICA target already would be.
+
+    photometric is additionally spatially masked to just the face region
+    (batch_2d["face_mask"], the same XSeg mask _render_and_reconstruct inverts
+    to build masking()'s background_mask) - see photometric_loss's own
+    docstring for why (unmasked, the background's near-free reconstruction
+    dilutes the gradient signal on the face region). VGG stays unmasked: its
+    input must remain the full natural image (a partially blacked-out image
+    would corrupt its pretrained features), and masking its loss instead
+    would require resizing the mask independently per block - left for a
+    follow-up if the face region still lacks structure after this change."""
     valid_recon = batch_2d["flag_face_mask_valid"]
     reconstructed, projected_fan, projected_mp = _render_and_reconstruct(
         flame, renderer, unet, face_probabilities, encoded, batch_2d["pixel_values"], batch_2d["face_mask"],
         valid_recon,
     )
 
-    photometric = gated_loss(photometric_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
+    photometric = gated_loss(
+        photometric_loss, valid_recon, reconstructed, batch_2d["pixel_values"], batch_2d["face_mask"].unsqueeze(1)
+    )
     vgg = gated_loss(vgg_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
     emotion_term = gated_loss(
         lambda r, t: emotion_loss(r, t, emotion_net), valid_recon, reconstructed, batch_2d["pixel_values"]

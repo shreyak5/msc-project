@@ -33,9 +33,24 @@ import torchvision
 from model import constants
 
 
-def photometric_loss(reconstructed: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """reconstructed, target: (B, 3, H, W) in [0, 1] -> scalar L1 loss."""
-    return F.l1_loss(reconstructed, target)
+def photometric_loss(
+    reconstructed: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """reconstructed, target: (B, 3, H, W) in [0, 1] -> scalar L1 loss.
+
+    mask: (B, 1, H, W), optional - restricts the loss to the masked-in (face)
+    region. Without it, the mean is dragged down by the background, which the
+    UNet reconstructs almost for free (it's handed through unmasked in
+    masking()'s own input) - that dilutes the gradient signal on the face
+    region, the part the network actually has to learn to fill in from the
+    rendered mesh + sparse pixel hints, and was observed to leave the face
+    region a flat, textureless blur despite an otherwise-healthy background
+    reconstruction."""
+    diff = (reconstructed - target).abs()
+    if mask is None:
+        return diff.mean()
+    denom = mask.sum().clamp(min=1) * reconstructed.shape[1]
+    return (diff * mask).sum() / denom
 
 
 class VGGPerceptualLoss(nn.Module):

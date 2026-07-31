@@ -120,6 +120,21 @@ def mesh_based_mask_uniform_faces(
         xy_area = triangle_area(fv)
         face_probabilities = face_probabilities * xy_area
 
+        # torch.multinomial requires every row to sum > 0 - a degenerate pose (all
+        # triangles back-facing or zero projected area) otherwise crashes the CUDA
+        # kernel and takes down the whole distributed job. Fall back to uniform
+        # sampling for just the affected batch elements. NaN/Inf (e.g. from an
+        # unsupervised/garbage camera scale multiplying a zeroed-out probability
+        # into 0*inf=nan) must be checked separately from sum<=0: a NaN sum
+        # compares False to <=0, so it would otherwise slip through this guard.
+        degenerate = ~torch.isfinite(face_probabilities).all(dim=1) | (face_probabilities.sum(dim=1) <= 0)
+        if degenerate.any():
+            print(
+                f"warning: degenerate face_probabilities for {degenerate.sum().item()} batch "
+                "element(s), falling back to uniform sampling"
+            )
+            face_probabilities[degenerate] = 1.0
+
         sampled_faces_indices = torch.multinomial(face_probabilities, num_points_to_sample, replacement=True).to(
             device
         )

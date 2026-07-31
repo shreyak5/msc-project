@@ -29,6 +29,42 @@ def test_photometric_loss_gradients_flow():
     assert a.grad is not None
 
 
+def test_photometric_loss_mask_ignores_unmasked_region():
+    a = torch.rand(1, 3, 8, 8)
+    b = a.clone()
+    mask = torch.zeros(1, 1, 8, 8)
+    mask[:, :, :4, :] = 1.0  # only top half is "face"
+
+    b[:, :, 4:, :] += 10.0  # corrupt only the non-face (unmasked) half
+    assert photometric_loss(a, b, mask).item() == pytest.approx(0.0, abs=1e-6)
+
+    b2 = a.clone()
+    b2[:, :, :4, :] += 1.0  # corrupt only the face (masked) half
+    assert photometric_loss(a, b2, mask).item() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_photometric_loss_mask_matches_manual_masked_l1():
+    a = torch.rand(2, 3, 8, 8)
+    b = torch.rand(2, 3, 8, 8)
+    mask = (torch.rand(2, 1, 8, 8) > 0.5).float()
+
+    diff = (a - b).abs()
+    expected = (diff * mask).sum() / (mask.sum() * 3)
+    assert photometric_loss(a, b, mask).item() == pytest.approx(expected.item(), abs=1e-6)
+
+
+def test_photometric_loss_mask_gradients_flow():
+    a = torch.rand(1, 3, 8, 8, requires_grad=True)
+    b = torch.rand(1, 3, 8, 8)
+    mask = torch.ones(1, 1, 8, 8)
+    mask[:, :, :4, :] = 0.0
+
+    photometric_loss(a, b, mask).backward()
+    assert a.grad is not None
+    assert torch.all(a.grad[:, :, :4, :] == 0)
+    assert torch.any(a.grad[:, :, 4:, :] != 0)
+
+
 def test_vgg_loss_zero_for_identical_images():
     device = "cuda"
     vgg = VGGPerceptualLoss().to(device)
