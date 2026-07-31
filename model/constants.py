@@ -257,10 +257,22 @@ EMOTION_LOSS_WEIGHT = 1.0
 # Photometric (model/losses/photometric.py's photometric_loss, an L1) and VGG
 # perceptual (VGGPerceptualLoss) losses, Stage 2 Pass A's reconstruction path
 # only (no photometric supervision in Stage 1 - no rendering happens there).
-# Sec 6 weights paragraph: "Starting loss weights (from SMIRK): ... VGG 10,
-# photometric 1 ...".
+# Sec 6 weights paragraph originally: "Starting loss weights (from SMIRK):
+# ... VGG 10, photometric 1 ..." - SMIRK's own weight, calibrated against
+# SMIRK's own co-active losses, not this project's. VGG_LOSS_WEIGHT lowered
+# in two steps after measuring its actual share of Pass A/C's gradient: with
+# VGG's raw magnitude (summed, not averaged, over 4 feature blocks - see
+# VGGPerceptualLoss's own docstring) around 1.4-2.0 vs. landmark/mesh/mica/
+# closure's raw magnitudes around 0.02-0.2, weight 10 gave VGG ~91% of Pass
+# A's total loss (landmark/mesh/mica/closure/lvc combined were under 9%),
+# alongside observed landmark/mesh accuracy regressing relative to the Stage
+# 1 checkpoint Stage 2 started from. First dropped 10x to 1.0 (~50% share) -
+# still the largest single term - then dropped again to 0.1 (10 -> 1 -> 0.1
+# overall, 100x from the SMIRK-derived original), landing VGG at ~9% of Pass
+# A's gradient and ~13% of Pass C's - closer to landmark/mica/mesh's
+# individual shares than dominating them.
 PHOTOMETRIC_LOSS_WEIGHT = 1.0
-VGG_LOSS_WEIGHT = 10.0
+VGG_LOSS_WEIGHT = 0.1
 
 # Temporal smoothness (model/losses/temporal_smoothness.py), Stage 2 Pass C
 # only. velocity_penalty (L1, mean absolute first difference) applies
