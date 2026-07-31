@@ -183,11 +183,10 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 1 pretraining (implementation-plan.md Sec 7).")
     parser.add_argument("--config", type=str, default="training/config/pretrain.yaml")
-    parser.add_argument("--checkpoint_pth", type=str, default=None, help="Resume training from this checkpoint file")
     args = parser.parse_args()
 
     cfg = load_pretrain_config(args.config)
-    train(cfg, checkpoint_pth=args.checkpoint_pth)
+    train(cfg, checkpoint_pth=cfg.checkpoint_pth)
 
 
 if __name__ == "__main__":

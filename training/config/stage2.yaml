@@ -5,10 +5,8 @@ log_interval_steps: 50
 checkpoint_interval_steps: 1000
 device: cuda
 checkpoint_dir: /projects/u6kf/sk3925_misc/checkpoints/stage2
-# Placeholder - Stage 1 hasn't actually been trained yet (no real checkpoints
-# exist under .../checkpoints/pretrain/ yet). Update this once a real Stage 1
-# checkpoint exists; only read on a fresh Stage 2 run (no --checkpoint_pth).
-stage1_checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/pretrain/step_00060000.pt
+stage1_checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/pretrain/step_00059999.pt
 dataloader_config_path: dataset_processing/config/dataloader.yaml
 pass_pattern: [A, B, C]
 pass_b_alternation_period: 1
+# checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/stage2/step_00017999.pt

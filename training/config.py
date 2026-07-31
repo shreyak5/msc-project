@@ -44,6 +44,9 @@ class PretrainConfig:
     checkpoint_dir: str
     dataloader_config_path: str
     datasets_yaml_path: str = str(DEFAULT_DATASETS_YAML)
+    # Resume training from this checkpoint file - checked on every run. None
+    # (unset in the YAML) means a fresh run.
+    checkpoint_pth: str | None = None
 
 
 def load_pretrain_config(path: str | Path) -> PretrainConfig:
@@ -85,6 +88,10 @@ class Stage2Config:
     # alternates every single Pass B call.
     pass_b_alternation_period: int = 1
     datasets_yaml_path: str = str(DEFAULT_DATASETS_YAML)
+    # Resume Stage 2's own training from this checkpoint file - unlike
+    # stage1_checkpoint_pth (one-time seed), this is checked on every run.
+    # None (unset in the YAML) means a fresh Stage 2 run.
+    checkpoint_pth: str | None = None
 
 
 def load_stage2_config(path: str | Path) -> Stage2Config:
