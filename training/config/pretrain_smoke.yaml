@@ -1,0 +1,16 @@
+# Smoke-test variant of pretrain.yaml (implementation-plan.md Sec 7) - for
+# validating the multi-node SLURM/DDP launch mechanics (slurm_jobs/
+# pretrain_smoke_test.sh) cheaply and quickly, not for real training. Same
+# dataloader/dataset pipeline as the real config (so it still exercises the
+# real cache-corruption self-healing path etc.), just num_steps trimmed way
+# down and log_interval_steps=1 so every step prints immediately - a
+# multi-node run either finishes cleanly in well under a minute once
+# scheduled, or fails fast, instead of needing to be babysat.
+seed: 42
+learning_rate: 0.0001
+num_steps: 5
+log_interval_steps: 1
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6kf/sk3925_misc/checkpoints/pretrain_smoke_test
+dataloader_config_path: dataset_processing/config/dataloader.yaml

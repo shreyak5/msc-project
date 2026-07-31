@@ -9,4 +9,4 @@ stage1_checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/pretrain/step_0005
 dataloader_config_path: dataset_processing/config/dataloader.yaml
 pass_pattern: [A, B, C]
 pass_b_alternation_period: 1
-# checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/stage2/step_00017999.pt
+# checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/stage2/step_00009999.pt
