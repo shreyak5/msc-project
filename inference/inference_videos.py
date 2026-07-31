@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input_path", type=str, required=True, help="Directory of video files.")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
-    parser.add_argument("--xseg_device", type=str, default="cpu")
+    parser.add_argument("--xseg_device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--out_path", type=str, default="inference/output/videos")
     parser.add_argument(
         "--save_vertices", action="store_true", help="Also decode through FLAME and save vertices/landmarks.",
@@ -138,7 +138,7 @@ def process_video_group(video_paths_group: list[str], cache_root: str, executor,
             for i, frame_bgr in enumerate(frames)
         )
 
-    results = run_parallel_crop_and_parse(jobs, executor)
+    results = run_parallel_crop_and_parse(jobs, executor, args.xseg_device)
 
     results_by_video: dict[str, list] = {}
     for result in results:

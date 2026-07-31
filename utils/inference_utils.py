@@ -27,6 +27,7 @@ from typing import NamedTuple
 import cv2
 import numpy as np
 import torch
+from skimage.transform import SimilarityTransform
 from torch import nn
 
 from dataset_processing.dataloading.detector_pool import get_detector
@@ -166,7 +167,7 @@ def _crop_and_parse_np(
     xseg_device: str,
     crop_scale: float,
     image_size: int,
-) -> tuple[np.ndarray | None, np.ndarray, float, bool]:
+) -> tuple[np.ndarray | None, np.ndarray, float, bool, SimilarityTransform | None]:
     """Numpy-only core: one detection feeding both the model's crop and
     XSeg's mask, via crop_face_with_landmarks + get_face_parsing's
     precomputed_crop param (instead of letting get_face_parsing re-detect
@@ -175,11 +176,16 @@ def _crop_and_parse_np(
     which add device placement on top) and the process-pool worker below
     (which can't return CUDA tensors across a process boundary anyway, so it
     needs this numpy form regardless). Returns (cropped_rgb | None, face_mask,
-    visibility_ratio, valid); cropped_rgb is None only when no face was
-    detected, in which case get_face_parsing is still called (with
+    visibility_ratio, valid, tform); cropped_rgb/tform are None only when no
+    face was detected, in which case get_face_parsing is still called (with
     precomputed_crop=None) so it runs and caches its own detection attempt -
-    a second detector call, but only on that rare no-face frame."""
-    cropped_bgr, _tform, landmarks_5pt_crop, box_crop = crop_face_with_landmarks(
+    a second detector call, but only on that rare no-face frame. tform maps
+    original-frame coordinates to crop-space coordinates (same convention as
+    baselines/smirk_experiments/demo_utils.py's own crop transform) - kept
+    around so a caller that wants to warp a crop-space render back into the
+    original frame's position (demo_videos.py's --render_orig) can do so
+    without re-detecting."""
+    cropped_bgr, tform, landmarks_5pt_crop, box_crop = crop_face_with_landmarks(
         image_bgr, detector, scale=crop_scale, image_size=image_size,
     )
 
@@ -196,7 +202,7 @@ def _crop_and_parse_np(
         crop_scale, image_size,
         precomputed_crop=precomputed_crop,
     )
-    return cropped_rgb, face_mask, visibility_ratio, valid
+    return cropped_rgb, face_mask, visibility_ratio, valid, tform
 
 
 def crop_tensor_and_compute_xseg_mask(
@@ -216,7 +222,7 @@ def crop_tensor_and_compute_xseg_mask(
     _crop_and_parse_np. Returns (pixel_values, cropped_rgb, face_mask,
     visibility_ratio, valid); pixel_values/cropped_rgb are None if no face
     was detected, matching crop_and_tensor's own no-face contract."""
-    cropped_rgb, face_mask_np, visibility_ratio, valid = _crop_and_parse_np(
+    cropped_rgb, face_mask_np, visibility_ratio, valid, _tform = _crop_and_parse_np(
         image_bgr, detector, cache_root, sample_id, frame_index, xseg_device, crop_scale, image_size,
     )
     pixel_values = None
@@ -250,6 +256,7 @@ class FrameResult(NamedTuple):
     face_mask: np.ndarray
     visibility_ratio: float
     valid: bool
+    tform: SimilarityTransform | None = None
 
 
 def _pool_worker_crop_and_parse(job: FrameJob) -> FrameResult:
@@ -267,11 +274,11 @@ def _pool_worker_crop_and_parse(job: FrameJob) -> FrameResult:
     --num_shards workers already rely on - each pool worker process pays
     that construction cost exactly once, on its first job."""
     detector = get_detector("cpu", DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME)
-    cropped_rgb, face_mask, visibility_ratio, valid = _crop_and_parse_np(
+    cropped_rgb, face_mask, visibility_ratio, valid, tform = _crop_and_parse_np(
         job.frame_bgr, detector, job.cache_root, job.sample_id, job.frame_index,
         "cpu", job.crop_scale, job.image_size,
     )
-    return FrameResult(job.video_key, job.frame_index, cropped_rgb, face_mask, visibility_ratio, valid)
+    return FrameResult(job.video_key, job.frame_index, cropped_rgb, face_mask, visibility_ratio, valid, tform)
 
 
 _THREAD_LIMIT_ENV_VARS = (
@@ -370,14 +377,19 @@ def decode_and_project(flame: FLAME, encoded: dict[str, torch.Tensor], crop_size
 def render_2d_reconstruction(
     flame: FLAME, renderer: Renderer, unet: UNetGenerator, face_probabilities: torch.Tensor,
     encoded: dict[str, torch.Tensor], pixel_values: torch.Tensor, face_mask: torch.Tensor,
+    valid_recon: torch.Tensor,
 ) -> torch.Tensor:
     """Thin call into training/stage2.py's _render_and_reconstruct - reused
     directly rather than duplicated, since it's already the exact mask -> sample
-    1% pixels -> UNet path this needs (Sec 7 Pass A/C)."""
+    1% pixels -> UNet path this needs (Sec 7 Pass A/C).
+
+    valid_recon: (B,) bool - rows without a validly detected/parsed face are
+    skipped by _render_and_reconstruct's masking step (see its own docstring);
+    callers here always pass an already-filtered/known-valid batch."""
     from training.stage2 import _render_and_reconstruct
 
     reconstructed, _projected_fan, _projected_mp = _render_and_reconstruct(
-        flame, renderer, unet, face_probabilities, encoded, pixel_values, face_mask,
+        flame, renderer, unet, face_probabilities, encoded, pixel_values, face_mask, valid_recon,
     )
     return reconstructed
 

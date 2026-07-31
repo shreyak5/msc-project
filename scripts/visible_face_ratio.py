@@ -146,7 +146,7 @@ def main():
         description='Compute the visible face region metric: ratio of XSeg segmentation '
                      'mask area to the RetinaFace detection box area.')
     parser_args.add_argument('--input_path', type=str, required=True, help='Path to an image file or a directory of images')
-    parser_args.add_argument('--device', type=str, default='cuda', help='Device for the RetinaFace detector')
+    parser_args.add_argument('--device', type=str, default='cuda', help='Device for the RetinaFace detector and XSeg (PyTorch-backed)')
     parser_args.add_argument('--scale', type=float, default=1.4, help='Crop scale factor relative to the detected face box')
     parser_args.add_argument('--crop_size', type=int, default=224, help='Output crop size (square)')
     parser_args.add_argument('--mask_threshold', type=float, default=0.5, help='Threshold above which a mask pixel counts toward area B')
@@ -158,7 +158,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     face_detector = build_retinaface_detector(args.device)
-    xseg = XSeg(align_size=args.align_size, blur_sigma=args.blur_sigma)
+    xseg = XSeg(align_size=args.align_size, blur_sigma=args.blur_sigma, device=args.device)
 
     image_paths = gather_image_paths(args.input_path)
     if not image_paths:

@@ -13,11 +13,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 from uniface.detection import RetinaFace
 from uniface.parsing import XSeg
 
 VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+DEFAULT_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 def is_image_file(filepath):
@@ -81,6 +83,7 @@ def save_visualization(image, mask, overlay, out_path, title):
 def main():
     parser_args = argparse.ArgumentParser(description="Segment faces with uniface's XSeg and visualize the mask.")
     parser_args.add_argument('--input_path', type=str, required=True, help='Path to an image file or a directory of images')
+    parser_args.add_argument('--device', type=str, default=DEFAULT_DEVICE, help='Device for XSeg (PyTorch-backed)')
     parser_args.add_argument('--align_size', type=int, default=256, help='XSeg face alignment size')
     parser_args.add_argument('--blur_sigma', type=float, default=0, help='Gaussian blur sigma for mask smoothing (0 = raw)')
     parser_args.add_argument('--alpha', type=float, default=0.5, help='Overlay blend strength')
@@ -90,7 +93,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     detector = RetinaFace()
-    xseg = XSeg(align_size=args.align_size, blur_sigma=args.blur_sigma)
+    xseg = XSeg(align_size=args.align_size, blur_sigma=args.blur_sigma, device=args.device)
 
     image_paths = gather_image_paths(args.input_path)
     if not image_paths:
