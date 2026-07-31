@@ -41,6 +41,21 @@ CATEGORIES_3D = {"3d_image", "3d_video"}
 # every video category's clips in Pass C - see build_category_dataset.
 CATEGORIES_2D = {"2d_image", "2d_video"}
 
+# CoMA/VOCASET are controlled studio 4D-scan captures - no genuine hand/object
+# occlusion ever occurs. Their raw visibility_ratio is dominated by RetinaFace/
+# XSeg domain mismatch (painted mocap markers + skull cap + extreme close-up
+# framing, none of which either model was trained on): XSeg's mask collapses
+# to ~0 on some frames despite a fully visible face and balloons past the
+# RetinaFace box on others, giving std ~0.28 vs ~0.06-0.10 on the natural-video
+# datasets (see output/visible_face_ratio/coma_vocaset_domain_mismatch/ for
+# example frames/masks). A fixed constant is not a workaround but the correct
+# value here: TemporalTransformer's bias only ever uses each frame's deviation
+# from its own local window mean (model/temporal.py's s_tilde, Sec 4.3) - a
+# constant score makes that deviation exactly zero for every frame, so TT
+# falls back to pure ALiBi distance-based attention for these two datasets,
+# matching the fact that there's no real occlusion signal to encode.
+VISIBILITY_RATIO_OVERRIDE = {"coma": 0.8, "vocaset": 0.8}
+
 
 def _crop_to_tensor(crop_bgr: np.ndarray) -> torch.Tensor:
     rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
@@ -325,6 +340,8 @@ class VideoFaceDataset(Dataset):
                 self._get_xseg,
                 self.crop_scale, self.image_size,
             )
+            if self.dataset_name in VISIBILITY_RATIO_OVERRIDE:
+                visibility_ratio = VISIBILITY_RATIO_OVERRIDE[self.dataset_name]
             if self.with_face_mask:
                 face_masks.append(torch.from_numpy(face_mask))
                 flags_face_mask_valid.append(flag_face_parsing_valid)
