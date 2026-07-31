@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--detector_device", type=str, default="cpu")
-    parser.add_argument("--xseg_device", type=str, default="cpu")
+    parser.add_argument("--xseg_device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--out_path", type=str, default="inference/output/demo")
     parser.add_argument("--render_mesh", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--render_2d_recon", action=argparse.BooleanOptionalAction, default=False)
@@ -114,6 +114,7 @@ def main() -> None:
         reconstructed = render_2d_reconstruction(
             models["flame"], models["renderer"], models["unet"], face_probabilities,
             encoded, pixel_values, face_mask,
+            torch.ones(1, dtype=torch.bool, device=args.device),
         )
         panels.append(tensor_to_uint8_rgb(reconstructed))
 
