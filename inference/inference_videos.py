@@ -39,7 +39,6 @@ from utils.inference_utils import (  # noqa: E402
     make_crop_parse_pool,
     run_flame,
     run_parallel_crop_and_parse,
-    shared_cache_root,
     timestamped_out_dir,
 )
 
@@ -65,7 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=4, help="Number of VIDEOS per encode_video call.")
     parser.add_argument(
         "--num_workers", type=int, default=min(32, os.cpu_count() or 1),
-        help="Process-pool workers for the CPU-bound detect+crop+XSeg step (see utils/inference_utils.py).",
+        help="Process-pool workers for the CPU-bound detect+crop step; XSeg itself runs as one "
+        "batched GPU call afterward (see utils/inference_utils.py).",
     )
     return parser.parse_args()
 
@@ -122,7 +122,7 @@ def assemble_video_from_results(
     }
 
 
-def process_video_group(video_paths_group: list[str], cache_root: str, executor, args: argparse.Namespace) -> list[dict]:
+def process_video_group(video_paths_group: list[str], executor, args: argparse.Namespace) -> list[dict]:
     """Decodes every video in this group (sequential per-video, as before),
     then flattens ALL of their frames into one job list submitted to the
     shared pool in a single call - balances load evenly across workers
@@ -134,7 +134,7 @@ def process_video_group(video_paths_group: list[str], cache_root: str, executor,
     jobs: list[FrameJob] = []
     for frames, video_name in decoded:
         jobs.extend(
-            FrameJob(video_name, i, frame_bgr, video_name, cache_root, args.crop_scale, args.image_size)
+            FrameJob(video_name, i, frame_bgr, args.crop_scale, args.image_size)
             for i, frame_bgr in enumerate(frames)
         )
 
@@ -219,7 +219,6 @@ def process_group(videos: list[dict], models: dict, args: argparse.Namespace) ->
 
 def main() -> None:
     args = parse_args()
-    cache_root = shared_cache_root()
     args.out_path = timestamped_out_dir(args.out_path)
 
     models = build_models(args.device, use_unet=False)
@@ -236,7 +235,7 @@ def main() -> None:
         num_videos = 0
         for start in range(0, len(video_paths), args.batch_size):
             group_paths = video_paths[start : start + args.batch_size]
-            videos = process_video_group(group_paths, cache_root, executor, args)
+            videos = process_video_group(group_paths, executor, args)
             process_group(videos, models, args)
             num_videos += len(videos)
     finally:

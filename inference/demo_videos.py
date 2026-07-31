@@ -37,7 +37,6 @@ from utils.inference_utils import (  # noqa: E402
     render_2d_reconstruction,
     run_flame,
     run_parallel_crop_and_parse,
-    shared_cache_root,
     tensor_to_uint8_rgb,
     timestamped_out_dir,
 )
@@ -72,7 +71,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument(
         "--num_workers", type=int, default=min(32, os.cpu_count() or 1),
-        help="Process-pool workers for the CPU-bound detect+crop+XSeg step (see utils/inference_utils.py).",
+        help="Process-pool workers for the CPU-bound detect+crop step; XSeg itself runs as one "
+        "batched GPU call afterward (see utils/inference_utils.py).",
     )
     return parser.parse_args()
 
@@ -97,7 +97,6 @@ def main() -> None:
     if not args.render_mesh and not args.render_2d_recon:
         raise ValueError("At least one of --render_mesh / --render_2d_recon must be enabled")
 
-    cache_root = shared_cache_root()
     args.out_path = timestamped_out_dir(args.out_path)
 
     start_time = time.perf_counter()
@@ -124,13 +123,10 @@ def main() -> None:
     log(f"loaded {num_frames} frames from {args.input_path}")
 
     jobs = [
-        FrameJob(video_name, i, frame_bgr, video_name, cache_root, args.crop_scale, args.image_size)
+        FrameJob(video_name, i, frame_bgr, args.crop_scale, args.image_size)
         for i, frame_bgr in enumerate(frames)
     ]
-    print(
-        f"[demo] running detect+crop+XSeg-parse for {num_frames} frames "
-        f"across {args.num_workers} workers (cache: {cache_root})..."
-    )
+    print(f"[demo] running detect+crop+XSeg-parse for {num_frames} frames across {args.num_workers} workers...")
     executor = make_crop_parse_pool(args.num_workers)
     try:
         results = run_parallel_crop_and_parse(jobs, executor, args.xseg_device)

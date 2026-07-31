@@ -30,25 +30,11 @@ class FaceParsingResult:
     error: str | None = None
 
 
-@dataclass
-class PendingFaceParsing:
-    """A cache miss whose crop/landmarks/box are already known but whose XSeg mask
-    hasn't been computed yet. Returned by get_face_parsing_or_defer instead of
-    computing synchronously inline (like compute_face_parsing does), so a caller
-    that wants to batch many misses into one XSeg call (e.g. on GPU - see
-    uniface.parsing.XSeg.parse_batch) can collect these first and finish them all
-    at once via resolve_pending_face_parsing."""
-    sample_id: str
-    frame_index: int | None
-    cropped: np.ndarray
-    landmarks_5pt_crop: np.ndarray
-    box_crop: np.ndarray
-
-
-def _visibility_ratio(face_mask: np.ndarray, box_crop: np.ndarray) -> float:
+def visibility_ratio_from_mask_and_box(face_mask: np.ndarray, box_crop: np.ndarray) -> float:
     """mask_area / detected-box-area, per scripts/visible_face_ratio.py - shared by
     every path that turns an already-computed XSeg mask + box into the ratio
-    TemporalTransformer's visibility_scores input needs."""
+    TemporalTransformer's visibility_scores input needs (this module's own
+    compute_face_parsing, and utils/inference_utils.py's uncached batched pool)."""
     box_area = max(0.0, box_crop[2] - box_crop[0]) * max(0.0, box_crop[3] - box_crop[1])
     mask_area = float(np.count_nonzero(face_mask > 0.5))
     return mask_area / box_area if box_area > 0 else 0.0
@@ -63,9 +49,7 @@ def _acquire_crop_or_sentinel(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | FaceParsingResult:
     """Returns (cropped, landmarks_5pt_crop, box_crop) - either straight from
     `precomputed_crop` or via a fresh detection - or an "unreadable"/"noface"
-    FaceParsingResult when that's not possible. Shared by compute_face_parsing
-    (which still calls XSeg synchronously afterward) and get_face_parsing_or_defer
-    (which defers the XSeg call), so both acquire the crop identically.
+    FaceParsingResult when that's not possible.
 
     precomputed_crop: optional (cropped_image, landmarks_5pt_crop, box_crop) -
     the exact tuple crop_face_with_landmarks would produce, for a caller that
@@ -120,7 +104,7 @@ def compute_face_parsing(
     the only cost difference is one extra warp_crop (cheap) versus a cache
     read, and a fresh detection is needed either way for XSeg's landmarks
     (crop_cache doesn't persist those). See _acquire_crop_or_sentinel for the
-    crop-acquisition details, shared with get_face_parsing_or_defer below."""
+    crop-acquisition details."""
     acquired = _acquire_crop_or_sentinel(load_source_image, get_detector, crop_scale, image_size, precomputed_crop)
     if isinstance(acquired, FaceParsingResult):
         return acquired
@@ -128,7 +112,7 @@ def compute_face_parsing(
 
     xseg = get_xseg()
     face_mask = xseg.parse(cropped, landmarks=landmarks_5pt_crop).astype(np.float32)
-    visibility_ratio = _visibility_ratio(face_mask, box_crop)
+    visibility_ratio = visibility_ratio_from_mask_and_box(face_mask, box_crop)
 
     return FaceParsingResult(status="ok", face_mask=face_mask, visibility_ratio=visibility_ratio)
 
@@ -139,9 +123,7 @@ def _check_cache(
     """Sentinel check -> bucket-container read (self-healing on a corrupted
     entry), with no computation. Returns a resolved FaceParsingResult on a hit
     (including the "previously found unreadable/noface" sentinel cases), or None
-    on a true cache miss - shared by get_face_parsing (which computes+writes the
-    result synchronously on a miss) and get_face_parsing_or_defer (which defers
-    the XSeg call, to batch it later)."""
+    on a true cache miss, for get_face_parsing to compute+write."""
     unreadable_path = sentinel_path(cache_root, dataset, sample_id, frame_index, "unreadable")
     if unreadable_path.exists():
         return FaceParsingResult(status="unreadable", error="previously found unreadable")
@@ -179,9 +161,7 @@ def _write_cache_result(
     """Persists a freshly computed FaceParsingResult - sentinel write for
     noface/unreadable, bucket-container write (under the bucket's write lock,
     fresh re-read-merge-write, so a second writer arriving right after another
-    one just merges on top rather than clobbering it) for "ok". Shared by
-    get_face_parsing's own compute path and resolve_pending_face_parsing's
-    batched one."""
+    one just merges on top rather than clobbering it) for "ok"."""
     if result.status == "unreadable":
         atomic_write_bytes(sentinel_path(cache_root, dataset, sample_id, frame_index, "unreadable"), b"")
         return
@@ -257,68 +237,3 @@ def get_face_parsing(
     return _resolve_result(result, mask_fallback, on_noface, on_error)
 
 
-def get_face_parsing_or_defer(
-    cache_root: str | Path,
-    dataset: str,
-    sample_id: str,
-    frame_index: int | None,
-    load_source_image: Callable[[], np.ndarray],
-    get_detector: Callable[[], object],
-    crop_scale: float,
-    image_size: int,
-    precomputed_crop: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
-) -> tuple[np.ndarray, float, bool] | PendingFaceParsing:
-    """Same cache-check-then-acquire-crop flow as get_face_parsing, but stops
-    short of calling XSeg on a true cache miss: returns a PendingFaceParsing for
-    the caller to resolve later (batched, e.g. on GPU - see
-    resolve_pending_face_parsing) instead of computing synchronously inline.
-
-    noface/unreadable outcomes - whether from a sentinel hit or a fresh
-    detection attempt - are still resolved and cached immediately here, exactly
-    like get_face_parsing: only the "found a real crop, need XSeg" case is
-    deferred, since that's the only step this exists to batch. Has no
-    on_noface/on_error/get_xseg params (unlike get_face_parsing) since its only
-    caller, utils/inference_utils.py's frame-processing pool, doesn't use them."""
-    mask_fallback = np.zeros((image_size, image_size), dtype=np.float32)
-
-    cached = _check_cache(cache_root, dataset, sample_id, frame_index)
-    if cached is not None:
-        return _resolve_result(cached, mask_fallback, None, None)
-
-    acquired = _acquire_crop_or_sentinel(load_source_image, get_detector, crop_scale, image_size, precomputed_crop)
-    if isinstance(acquired, FaceParsingResult):
-        _write_cache_result(cache_root, dataset, sample_id, frame_index, acquired)
-        return _resolve_result(acquired, mask_fallback, None, None)
-
-    cropped, landmarks_5pt_crop, box_crop = acquired
-    return PendingFaceParsing(sample_id, frame_index, cropped, landmarks_5pt_crop, box_crop)
-
-
-def resolve_pending_face_parsing(
-    cache_root: str | Path,
-    dataset: str,
-    pending: list[PendingFaceParsing],
-    xseg,
-) -> dict[tuple[str, int | None], tuple[np.ndarray, float, bool]]:
-    """Batched XSeg pass over every deferred item from get_face_parsing_or_defer:
-    one xseg.parse_batch(...) call (uniface.parsing.XSeg.parse_batch) instead of
-    N separate ones, then per-item visibility_ratio + cache write - the same two
-    steps compute_face_parsing/get_face_parsing would have done individually.
-    Returns a dict keyed by (sample_id, frame_index) for the caller to merge back
-    into its own per-frame results in whatever order it needs."""
-    if not pending:
-        return {}
-
-    images = [item.cropped for item in pending]
-    landmarks_list = [item.landmarks_5pt_crop for item in pending]
-    masks = xseg.parse_batch(images, landmarks_list)
-
-    resolved: dict[tuple[str, int | None], tuple[np.ndarray, float, bool]] = {}
-    for item, mask in zip(pending, masks):
-        mask = mask.astype(np.float32)
-        ratio = _visibility_ratio(mask, item.box_crop)
-        result = FaceParsingResult(status="ok", face_mask=mask, visibility_ratio=ratio)
-        _write_cache_result(cache_root, dataset, item.sample_id, item.frame_index, result)
-        resolved[(item.sample_id, item.frame_index)] = (mask, ratio, True)
-
-    return resolved

@@ -32,7 +32,6 @@ from utils.inference_utils import (  # noqa: E402
     make_panel,
     render_2d_reconstruction,
     run_flame,
-    shared_cache_root,
     tensor_to_uint8_rgb,
     timestamped_out_dir,
 )
@@ -63,7 +62,6 @@ def main() -> None:
     if not args.render_mesh and not args.render_2d_recon:
         raise ValueError("At least one of --render_mesh / --render_2d_recon must be enabled")
 
-    cache_root = shared_cache_root()
     args.out_path = timestamped_out_dir(args.out_path)
 
     models = build_models(args.device, use_unet=args.render_2d_recon)
@@ -87,10 +85,8 @@ def main() -> None:
         # compute_visibility_and_mask separately detecting the same image twice.
         # Only reached when this branch actually needs XSeg - the else below
         # still skips it entirely, same as before this change.
-        sample_id = os.path.splitext(os.path.basename(args.input_path))[0]
         pixel_values, cropped_rgb, face_mask, _visibility_ratio, valid = crop_tensor_and_compute_xseg_mask(
-            image_bgr, detector, cache_root, sample_id, None,
-            args.xseg_device, args.crop_scale, args.image_size, args.device,
+            image_bgr, detector, args.xseg_device, args.crop_scale, args.image_size, args.device,
         )
         if pixel_values is None:
             raise RuntimeError(f"No face detected in {args.input_path}")

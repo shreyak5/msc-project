@@ -11,9 +11,12 @@ than duplicating it.
 Face detection/cropping and visibility-scoring reuse this project's own
 dataset-pipeline building blocks (dataset_processing/dataloading/detector_pool.
 py, face_parsing_pool.py, face_parsing_cache.py, preprocessing/cropping.py) -
-these already have a fully live (cache-optional) code path with no dependency
-on any prewarm/cache-warming script, which is exactly what a fresh demo input
-needs."""
+these already have a fully live code path with no dependency on any
+prewarm/cache-warming script, which is exactly what a fresh demo input needs.
+No disk caching happens here (unlike training's dataset loading and
+scripts/prewarm_face_parsing_cache.py, which do cache): every frame is
+redetected/reparsed fresh on every run, matching how a demo/inference input is
+actually used - normally seen once per run, not across repeated epochs."""
 
 from __future__ import annotations
 
@@ -32,10 +35,10 @@ from torch import nn
 
 from dataset_processing.dataloading.detector_pool import get_detector
 from dataset_processing.dataloading.face_parsing_cache import (
-    PendingFaceParsing,
+    FaceParsingResult,
+    compute_face_parsing,
     get_face_parsing,
-    get_face_parsing_or_defer,
-    resolve_pending_face_parsing,
+    visibility_ratio_from_mask_and_box,
 )
 from dataset_processing.dataloading.face_parsing_pool import get_xseg
 from model.encoder import SViT
@@ -52,16 +55,6 @@ _FARL_CHECKPOINT_PATH = _REPO_ROOT / "pretrained_weights/farl/FaRL-Base-Patch16-
 
 DETECTOR_THRESHOLD = 0.8
 DETECTOR_MODEL_NAME = "mobilenet0.25"
-DEFAULT_OUT_ROOT = "inference/output"
-
-
-def shared_cache_root() -> str:
-    """Face-parsing cache shared by every script that needs live visibility/mask
-    scoring (demo_videos.py, inference_videos.py, demo_images.py's --render_2d_recon
-    path) - always under the top-level output root regardless of each script's own
-    --out_path, so repeated runs across different scripts/out_paths still hit the
-    same cache instead of each maintaining its own copy."""
-    return os.path.join(DEFAULT_OUT_ROOT, ".face_parsing_cache")
 
 
 def timestamped_out_dir(base_out_path: str) -> str:
@@ -163,28 +156,37 @@ def compute_visibility_and_mask(
     return face_mask, visibility_ratio, valid
 
 
+def _resolve_face_parsing(result: FaceParsingResult, image_size: int) -> tuple[np.ndarray, float, bool]:
+    """FaceParsingResult -> (face_mask, visibility_ratio, valid), same fallback
+    convention face_parsing_cache.get_face_parsing uses for its cached callers -
+    a zero mask + 0.0 ratio on noface/unreadable, so downstream code (which
+    always needs a same-shape mask tensor) never has to special-case None."""
+    if result.status != "ok":
+        return np.zeros((image_size, image_size), dtype=np.float32), 0.0, False
+    return result.face_mask, result.visibility_ratio, True
+
+
 def _crop_and_parse_np(
     image_bgr: np.ndarray,
     detector,
-    cache_root: str,
-    sample_id: str,
-    frame_index: int | None,
     xseg_device: str,
     crop_scale: float,
     image_size: int,
 ) -> tuple[np.ndarray | None, np.ndarray, float, bool, SimilarityTransform | None]:
-    """Numpy-only core: one detection feeding both the model's crop and
-    XSeg's mask, via crop_face_with_landmarks + get_face_parsing's
-    precomputed_crop param (instead of letting get_face_parsing re-detect
-    internally, which is the redundant-detector-call this was written to
-    avoid). Shared by crop_tensor_and_compute_xseg_mask (non-pooled callers,
-    which add device placement on top) and the process-pool worker below
-    (which can't return CUDA tensors across a process boundary anyway, so it
-    needs this numpy form regardless). Returns (cropped_rgb | None, face_mask,
+    """Numpy-only core: one detection feeding both the model's crop and XSeg's
+    mask, via crop_face_with_landmarks + compute_face_parsing's precomputed_crop
+    param (instead of letting compute_face_parsing re-detect internally, which
+    is the redundant-detector-call this was written to avoid). No caching -
+    every call redetects/reparses from scratch, matching a demo/inference
+    script's actual usage pattern (each input is normally seen once per run).
+    Shared by crop_tensor_and_compute_xseg_mask (non-pooled callers, which add
+    device placement on top) and the process-pool worker below (which can't
+    return CUDA tensors across a process boundary anyway, so it needs this
+    numpy form regardless). Returns (cropped_rgb | None, face_mask,
     visibility_ratio, valid, tform); cropped_rgb/tform are None only when no
-    face was detected, in which case get_face_parsing is still called (with
-    precomputed_crop=None) so it runs and caches its own detection attempt -
-    a second detector call, but only on that rare no-face frame. tform maps
+    face was detected, in which case compute_face_parsing is still called (with
+    precomputed_crop=None) so it runs its own detection attempt - a second
+    detector call, but only on that rare no-face frame. tform maps
     original-frame coordinates to crop-space coordinates (same convention as
     baselines/smirk_experiments/demo_utils.py's own crop transform) - kept
     around so a caller that wants to warp a crop-space render back into the
@@ -199,23 +201,20 @@ def _crop_and_parse_np(
         cropped_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         precomputed_crop = (cropped_bgr, landmarks_5pt_crop, box_crop)
 
-    face_mask, visibility_ratio, valid = get_face_parsing(
-        cache_root, "inference", sample_id, frame_index,
+    result = compute_face_parsing(
         lambda: image_bgr,
         lambda: detector,
         lambda: get_xseg(xseg_device),
         crop_scale, image_size,
         precomputed_crop=precomputed_crop,
     )
+    face_mask, visibility_ratio, valid = _resolve_face_parsing(result, image_size)
     return cropped_rgb, face_mask, visibility_ratio, valid, tform
 
 
 def crop_tensor_and_compute_xseg_mask(
     image_bgr: np.ndarray,
     detector,
-    cache_root: str,
-    sample_id: str,
-    frame_index: int | None,
     xseg_device: str,
     crop_scale: float,
     image_size: int,
@@ -228,7 +227,7 @@ def crop_tensor_and_compute_xseg_mask(
     visibility_ratio, valid); pixel_values/cropped_rgb are None if no face
     was detected, matching crop_and_tensor's own no-face contract."""
     cropped_rgb, face_mask_np, visibility_ratio, valid, _tform = _crop_and_parse_np(
-        image_bgr, detector, cache_root, sample_id, frame_index, xseg_device, crop_scale, image_size,
+        image_bgr, detector, xseg_device, crop_scale, image_size,
     )
     pixel_values = None
     if cropped_rgb is not None:
@@ -238,9 +237,9 @@ def crop_tensor_and_compute_xseg_mask(
 
 
 class FrameJob(NamedTuple):
-    """One frame's worth of work for the CPU-bound crop+XSeg process pool
-    (see run_parallel_crop_and_parse). video_key identifies which video/image
-    a result belongs to once results come back, since a group of many videos'
+    """One frame's worth of work for the CPU-bound crop process pool (see
+    run_parallel_crop_and_parse). video_key identifies which video/image a
+    result belongs to once results come back, since a group of many videos'
     frames are flattened into one job list for even load-balancing across
     workers (video lengths vary, so one-worker-per-video would leave short
     videos idling while others are still decoding)."""
@@ -248,10 +247,18 @@ class FrameJob(NamedTuple):
     video_key: str
     frame_index: int
     frame_bgr: np.ndarray
-    sample_id: str
-    cache_root: str
     crop_scale: float
     image_size: int
+
+
+class _PendingXseg(NamedTuple):
+    """A frame whose crop/landmarks/box are already known but whose XSeg mask
+    hasn't been computed yet - carries everything run_parallel_crop_and_parse's
+    batched XSeg.parse_batch call needs, once every pool worker has returned."""
+
+    cropped: np.ndarray
+    landmarks_5pt_crop: np.ndarray
+    box_crop: np.ndarray
 
 
 class FrameResult(NamedTuple):
@@ -262,71 +269,54 @@ class FrameResult(NamedTuple):
     visibility_ratio: float
     valid: bool
     tform: SimilarityTransform | None = None
-    # Set only when this frame was a true face-parsing cache miss - XSeg hasn't
-    # run yet. run_parallel_crop_and_parse always resolves every pending result
-    # (via a single batched GPU call) before returning, so callers outside this
+    # Set only when a face was detected and XSeg hasn't run yet.
+    # run_parallel_crop_and_parse always resolves every pending result (via a
+    # single batched GPU call) before returning, so callers outside this
     # module never see a non-None pending field.
-    pending: PendingFaceParsing | None = None
+    pending: _PendingXseg | None = None
 
 
 def _crop_and_defer_np(
     image_bgr: np.ndarray,
     detector,
-    cache_root: str,
-    sample_id: str,
-    frame_index: int | None,
     crop_scale: float,
     image_size: int,
-) -> tuple[np.ndarray | None, tuple[np.ndarray, float, bool] | PendingFaceParsing, SimilarityTransform | None]:
-    """Pool-worker counterpart to _crop_and_parse_np: same one-detection-feeds-
-    both crop, but calls get_face_parsing_or_defer instead of get_face_parsing,
-    so a true cache miss comes back as a PendingFaceParsing instead of running
-    XSeg here - run_parallel_crop_and_parse batches every pending result from a
-    whole job list into one GPU call afterward. Returns (cropped_rgb | None,
-    outcome, tform); outcome is either the resolved (face_mask,
-    visibility_ratio, valid) tuple (cache hit, or a noface/unreadable result -
-    both already written to cache by get_face_parsing_or_defer) or a
-    PendingFaceParsing (real cache miss, XSeg not yet run)."""
+) -> tuple[np.ndarray | None, tuple[np.ndarray, float, bool] | _PendingXseg, SimilarityTransform | None]:
+    """Pool-worker counterpart to _crop_and_parse_np: detects+crops only, never
+    calls XSeg itself - a face was found -> returns a _PendingXseg for
+    run_parallel_crop_and_parse to batch through XSeg.parse_batch on GPU
+    afterward; no face -> resolved immediately (mask_fallback, 0.0, False),
+    matching _crop_and_parse_np's/compute_face_parsing's own no-face contract."""
     cropped_bgr, tform, landmarks_5pt_crop, box_crop = crop_face_with_landmarks(
         image_bgr, detector, scale=crop_scale, image_size=image_size,
     )
+    if cropped_bgr is None:
+        mask_fallback = np.zeros((image_size, image_size), dtype=np.float32)
+        return None, (mask_fallback, 0.0, False), None
 
-    cropped_rgb, precomputed_crop = None, None
-    if cropped_bgr is not None:
-        cropped_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
-        precomputed_crop = (cropped_bgr, landmarks_5pt_crop, box_crop)
-
-    outcome = get_face_parsing_or_defer(
-        cache_root, "inference", sample_id, frame_index,
-        lambda: image_bgr, lambda: detector,
-        crop_scale, image_size,
-        precomputed_crop=precomputed_crop,
-    )
-    return cropped_rgb, outcome, tform
+    cropped_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
+    return cropped_rgb, _PendingXseg(cropped_bgr, landmarks_5pt_crop, box_crop), tform
 
 
 def _pool_worker_crop_and_parse(job: FrameJob) -> FrameResult:
     """ProcessPoolExecutor worker: runs one frame's detect+crop on CPU via
-    _crop_and_defer_np, and either resolves its face-parsing result immediately
-    (cache hit, or no face detected) or hands back a PendingFaceParsing for the
-    main process to finish in a single batched GPU XSeg call (see
-    run_parallel_crop_and_parse) - never runs XSeg itself. Detection stays
-    CPU-side regardless of what device the main process's own models are on:
-    RetinaFace's mobilenet0.25 backbone is a lightweight, real-time-on-CPU
-    detector by design, and a GPU RetinaFace wouldn't actually parallelize
-    across many pool *processes* sharing one physical GPU (separate CUDA
-    contexts contending for one device, no MPS set up here) - the same reason
-    XSeg itself is deferred to a single main-process GPU call rather than run
-    per-worker. Builds its own detector via the same lazy-per-process-singleton
-    pool (detector_pool.get_detector) scripts/prewarm_face_parsing_cache.py's
-    own --num_shards workers already rely on - each pool worker process pays
-    that construction cost exactly once, on its first job."""
+    _crop_and_defer_np, and either resolves its result immediately (no face
+    detected) or hands back a _PendingXseg for the main process to finish in a
+    single batched GPU XSeg call (see run_parallel_crop_and_parse) - never runs
+    XSeg itself. Detection stays CPU-side regardless of what device the main
+    process's own models are on: RetinaFace's mobilenet0.25 backbone is a
+    lightweight, real-time-on-CPU detector by design, and a GPU RetinaFace
+    wouldn't actually parallelize across many pool *processes* sharing one
+    physical GPU (separate CUDA contexts contending for one device, no MPS set
+    up here) - the same reason XSeg itself is deferred to a single
+    main-process GPU call rather than run per-worker. Builds its own detector
+    via the same lazy-per-process-singleton pool (detector_pool.get_detector)
+    scripts/prewarm_face_parsing_cache.py's own --num_shards workers already
+    rely on - each pool worker process pays that construction cost exactly
+    once, on its first job."""
     detector = get_detector("cpu", DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME)
-    cropped_rgb, outcome, tform = _crop_and_defer_np(
-        job.frame_bgr, detector, job.cache_root, job.sample_id, job.frame_index,
-        job.crop_scale, job.image_size,
-    )
-    if isinstance(outcome, PendingFaceParsing):
+    cropped_rgb, outcome, tform = _crop_and_defer_np(job.frame_bgr, detector, job.crop_scale, job.image_size)
+    if isinstance(outcome, _PendingXseg):
         return FrameResult(job.video_key, job.frame_index, cropped_rgb, None, 0.0, False, tform, pending=outcome)
     face_mask, visibility_ratio, valid = outcome
     return FrameResult(job.video_key, job.frame_index, cropped_rgb, face_mask, visibility_ratio, valid, tform)
@@ -396,39 +386,35 @@ def run_parallel_crop_and_parse(
     redecode whenever it lands off-target (codec/keyframe dependent), which
     scattered per-frame random access across many workers could hit constantly.
 
-    Second phase, after the pool returns: every FrameResult whose face-parsing
-    was a true cache miss comes back with a non-None `pending` (see
-    _pool_worker_crop_and_parse) instead of a computed mask. Those are
-    collected across the whole job list and resolved in a single batched
-    XSeg.parse_batch GPU call (get_xseg(xseg_device) - already torch-backed,
-    see uniface.torch_utils) via resolve_pending_face_parsing, rather than each
-    of up to num_workers pool *processes* opening its own CUDA context to
-    compute one frame at a time - the FrameResults this function returns are
-    always fully resolved (pending=None), so callers never see a
-    PendingFaceParsing."""
+    Second phase, after the pool returns: every FrameResult with a detected
+    face comes back with a non-None `pending` (see _pool_worker_crop_and_parse)
+    instead of a computed mask - every one of these is collected across the
+    whole job list and resolved in a single batched XSeg.parse_batch GPU call
+    (get_xseg(xseg_device) - already torch-backed, see uniface.torch_utils),
+    rather than each of up to num_workers pool *processes* opening its own
+    CUDA context to compute one frame at a time. No caching: every frame is
+    redetected/reparsed fresh on every call, matching a demo/inference script's
+    actual usage pattern (each input is normally seen once per run). The
+    FrameResults this function returns are always fully resolved
+    (pending=None), so callers never see a _PendingXseg."""
     results = list(executor.map(_pool_worker_crop_and_parse, jobs))
 
-    pending_by_key = {
-        (result.pending.sample_id, result.pending.frame_index): result.pending
-        for result in results if result.pending is not None
-    }
-    if not pending_by_key:
+    pending_indices = [i for i, result in enumerate(results) if result.pending is not None]
+    if not pending_indices:
         return results
 
-    # Every job in one call shares the same cache_root/"inference" dataset tag
-    # (see FrameJob / shared_cache_root), so one resolve_pending_face_parsing
-    # call covers the whole batch.
     xseg = get_xseg(xseg_device)
-    resolved = resolve_pending_face_parsing(jobs[0].cache_root, "inference", list(pending_by_key.values()), xseg)
+    images = [results[i].pending.cropped for i in pending_indices]
+    landmarks_list = [results[i].pending.landmarks_5pt_crop for i in pending_indices]
+    masks = xseg.parse_batch(images, landmarks_list)
 
-    final_results = []
-    for result in results:
-        if result.pending is None:
-            final_results.append(result)
-            continue
-        face_mask, visibility_ratio, valid = resolved[(result.pending.sample_id, result.pending.frame_index)]
-        final_results.append(
-            result._replace(face_mask=face_mask, visibility_ratio=visibility_ratio, valid=valid, pending=None)
+    final_results = list(results)
+    for i, mask in zip(pending_indices, masks):
+        pending = final_results[i].pending
+        mask = mask.astype(np.float32)
+        visibility_ratio = visibility_ratio_from_mask_and_box(mask, pending.box_crop)
+        final_results[i] = final_results[i]._replace(
+            face_mask=mask, visibility_ratio=visibility_ratio, valid=True, pending=None,
         )
     return final_results
 
