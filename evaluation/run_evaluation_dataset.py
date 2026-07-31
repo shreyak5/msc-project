@@ -55,10 +55,15 @@ def main():
 
     keys = result_keys()
 
-    output_dir = timestamped_out_dir(args.output_dir)
     if args.num_shards > 1:
-        output_dir = os.path.join(output_dir, f'shard_{args.shard_index}')
+        # No timestamped_out_dir here: shard_index processes are launched in parallel
+        # by the caller, and merge_dataset_shards.py needs every shard to agree on the
+        # same output_dir/shard_i/ path deterministically (not by luck of landing in the
+        # same clock-minute).
+        output_dir = os.path.join(args.output_dir, f'shard_{args.shard_index}')
         os.makedirs(output_dir, exist_ok=True)
+    else:
+        output_dir = timestamped_out_dir(args.output_dir)
 
     evaluators = build_evaluators(args.method, args.device, args.crop_size,
                                    crop_scale=args.crop_scale, checkpoint_path=args.checkpoint)

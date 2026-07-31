@@ -36,4 +36,4 @@ for ((i = 0; i < NUM_SHARDS; i++)); do
 done
 wait
 
-.venv/bin/python evaluation/merge_dataset_shards.py --output_dir "$OUTPUT_DIR" --num_shards "$NUM_SHARDS"
+.venv/bin/python evaluation/merge_dataset_shards.py --output_dir "$OUTPUT_DIR" --num_shards "$NUM_SHARDS" --method ours_no_temporal

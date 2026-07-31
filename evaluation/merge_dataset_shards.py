@@ -13,6 +13,9 @@ def main():
     parser.add_argument('--output_dir', type=str, required=True,
                          help='Directory containing shard_0/, shard_1/, ... subfolders; merged output is written here')
     parser.add_argument('--num_shards', type=int, required=True)
+    parser.add_argument('--method', type=str, required=True,
+                         help='--method value the shards were produced with (run_evaluation_dataset.py prefixes '
+                              'its results.csv/skipped_videos.txt/summary.json with this)')
     args = parser.parse_args()
 
     merged_rows = []
@@ -24,17 +27,17 @@ def main():
     for i in range(args.num_shards):
         shard_dir = os.path.join(args.output_dir, f'shard_{i}')
 
-        with open(os.path.join(shard_dir, 'results.csv'), newline='') as f:
+        with open(os.path.join(shard_dir, f'{args.method}_results.csv'), newline='') as f:
             reader = csv.DictReader(f)
             fieldnames = fieldnames or reader.fieldnames
             merged_rows.extend(reader)
 
-        skipped_path = os.path.join(shard_dir, 'skipped_videos.txt')
+        skipped_path = os.path.join(shard_dir, f'{args.method}_skipped_videos.txt')
         if os.path.exists(skipped_path):
             with open(skipped_path) as f:
                 skipped_lines.extend(f.readlines())
 
-        with open(os.path.join(shard_dir, 'summary.json')) as f:
+        with open(os.path.join(shard_dir, f'{args.method}_summary.json')) as f:
             shard_summary = json.load(f)
         for key in totals:
             totals[key] += shard_summary[key]
