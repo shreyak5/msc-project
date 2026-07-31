@@ -6,7 +6,7 @@
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:4
-#SBATCH --time=24:00:00
+#SBATCH --time=03:00:00
 
 # Same topology as slurm_jobs/pretrain.sh: one srun task per NODE (not per
 # GPU) - srun (no --ntasks override below) inherits --ntasks=4/
