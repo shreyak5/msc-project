@@ -12,11 +12,14 @@ from dataset_processing.dataloading.registry import DEFAULT_DATASETS_YAML, load_
 def merge_logs(crop_cache_root: str, num_shards: int) -> None:
     logs_dir = Path(crop_cache_root) / "prewarm_logs"
     fieldnames = ["dataset", "sample_id", "frame_index", "source_path", "reason"]
+    # Glob rather than reconstruct exact filenames from range(num_shards): this
+    # also picks up prewarm_face_parsing_cache.py's shard_{i}_{dataset}.csv
+    # naming (used when multiple concurrent jobs each cover a different
+    # dataset subset, so they don't clobber each other's shard_{i}.csv), not
+    # just the plain shard_{i}.csv every other prewarm script still uses.
+    shard_paths = sorted(logs_dir.glob("shard_*.csv"))
     merged_rows = []
-    for i in range(num_shards):
-        shard_path = logs_dir / f"shard_{i}.csv"
-        if not shard_path.exists():
-            continue
+    for shard_path in shard_paths:
         with open(shard_path, newline="") as f:
             reader = csv.DictReader(f)
             merged_rows.extend(reader)
@@ -27,7 +30,7 @@ def merge_logs(crop_cache_root: str, num_shards: int) -> None:
         writer.writeheader()
         writer.writerows(merged_rows)
 
-    print(f"Merged {num_shards} shard logs ({len(merged_rows)} rows) into {merged_path}")
+    print(f"Merged {len(shard_paths)} shard logs ({len(merged_rows)} rows) into {merged_path}")
 
 
 def merge_frame_counts(crop_cache_root: str, num_shards: int, datasets_yaml: str) -> None:

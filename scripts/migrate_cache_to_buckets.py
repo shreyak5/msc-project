@@ -139,6 +139,10 @@ def migrate_bucket(b1_dir: Path, b2: str, extension: str, dry_run: bool) -> dict
     else:
         b2_dir.rmdir()
 
+    print(
+        f"migrated {b2_dir}: {stats['migrated']} entries, "
+        f"{stats['corrupted_skipped']} corrupted skipped, {stats['sentinels_moved']} sentinels moved"
+    )
     return stats
 
 
@@ -155,6 +159,19 @@ def main():
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
+    # A misconfigured/empty --cache_root (e.g. an unset shell variable when
+    # this is invoked outside its intended srun wrapper) would otherwise fail
+    # completely silently below - every dataset directory would just look
+    # "not found" and the whole run would quietly report all-zero counts, the
+    # exact kind of silent failure this project exists to eliminate. Fail
+    # loudly here instead of discovering it from a suspiciously-empty summary.
+    cache_root = Path(args.cache_root)
+    if not cache_root.is_dir():
+        raise SystemExit(
+            f"--cache_root {cache_root!r} does not exist or is not a directory - "
+            "check it was passed/expanded correctly (e.g. the variable wasn't empty)."
+        )
+
     dataset_names = [entry.name for entry in load_datasets_yaml(args.datasets_yaml)]
 
     # One global list of (dataset, b1_dir) pairs across every dataset, sharded
@@ -166,13 +183,22 @@ def main():
     # already a fixed set of real directories, so ownership is trivially
     # disjoint without recomputing any hash.
     all_b1_dirs: list[tuple[str, Path]] = []
+    datasets_found = 0
     for dataset in dataset_names:
-        dataset_dir = Path(args.cache_root) / dataset
+        dataset_dir = cache_root / dataset
         if not dataset_dir.is_dir():
             continue  # this cache root has no data for this dataset at all - fine, skip
+        datasets_found += 1
         for p in sorted(dataset_dir.iterdir()):
             if p.is_dir() and _is_hex_pair_dir(p.name):
                 all_b1_dirs.append((dataset, p))
+
+    if datasets_found == 0:
+        print(
+            f"warning: {cache_root} exists but none of the {len(dataset_names)} registered "
+            "dataset names have a subdirectory under it - double check --cache_root points at "
+            "the right cache (nothing below will be migrated)."
+        )
 
     my_b1_dirs = all_b1_dirs[args.shard_index::args.num_shards]
 

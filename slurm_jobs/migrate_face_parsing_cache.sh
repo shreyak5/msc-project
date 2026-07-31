@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=64
 #SBATCH --ntasks-per-node=64
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --time=02:00:00
 
 # CPU-only, pure file I/O: repackages face_parsing_cache's existing
@@ -39,4 +39,4 @@ srun --ntasks="$NUM_SHARDS" bash -c '
     --num_shards '"$NUM_SHARDS"' --shard_index $SLURM_PROCID
 '
 
-echo "DONE!"
+echo "Bash script done!"

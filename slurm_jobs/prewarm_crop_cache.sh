@@ -32,3 +32,5 @@ import yaml
 print(yaml.safe_load(open('$DATALOADER_CONFIG'))['crop_cache_root'])
 ")
 .venv/bin/python scripts/merge_prewarm_logs.py --crop_cache_root "$CROP_CACHE_ROOT" --num_shards "$NUM_SHARDS"
+
+echo "Bash script done!"

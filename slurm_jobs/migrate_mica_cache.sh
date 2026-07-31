@@ -37,4 +37,4 @@ srun --ntasks="$NUM_SHARDS" bash -c '
     --num_shards '"$NUM_SHARDS"' --shard_index $SLURM_PROCID
 '
 
-echo "DONE!"
+echo "Bash script done!"

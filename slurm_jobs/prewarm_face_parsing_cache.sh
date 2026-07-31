@@ -40,4 +40,4 @@ print(yaml.safe_load(open('$DATALOADER_CONFIG'))['face_parsing_cache_root'])
 ")
 .venv/bin/python scripts/merge_prewarm_logs.py --face_parsing_cache_root "$FACE_PARSING_CACHE_ROOT" --num_shards "$NUM_SHARDS"
 
-echo "DONE!"
+echo "Bash script done!"

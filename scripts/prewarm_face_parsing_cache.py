@@ -67,7 +67,7 @@ def main():
         get_detector, args.device, cfg.detector.threshold, cfg.detector.model_name)
     get_prewarm_xseg = functools.partial(get_xseg, args.device)
 
-    log_path = Path(cfg.face_parsing_cache_root) / "prewarm_logs" / f"shard_{args.shard_index}.csv"
+    log_path = Path(cfg.face_parsing_cache_root) / "prewarm_logs" / f"shard_{args.shard_index}_{args.dataset}.csv"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w", newline="") as log_file:
         log_writer = csv.writer(log_file)

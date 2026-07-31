@@ -6,7 +6,7 @@
 #SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=24:00:00
 
 PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
@@ -29,4 +29,4 @@ print(yaml.safe_load(open('$DATALOADER_CONFIG'))['mica_cache_root'])
 ")
 .venv/bin/python scripts/merge_prewarm_logs.py --mica_cache_root "$MICA_CACHE_ROOT" --num_shards "$NUM_SHARDS"
 
-echo "DONE!"
+echo "Bash script done!"

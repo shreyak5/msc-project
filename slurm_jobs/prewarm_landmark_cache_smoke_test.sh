@@ -31,4 +31,4 @@ srun --ntasks="$NUM_SHARDS" --gres=gpu:4 bash -c '
     --num_shards '"$NUM_SHARDS"' --shard_index $SLURM_PROCID
 '
 
-echo "DONE!"
+echo "Bash script done!"
