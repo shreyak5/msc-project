@@ -187,24 +187,22 @@ def _compute_2d_reconstruction_losses_from_encoded(
     training against garbage, not a real supervision signal, so those rows are
     excluded the same way an invalid landmark/MICA target already would be.
 
-    photometric is additionally spatially masked to just the face region
-    (batch_2d["face_mask"], the same XSeg mask _render_and_reconstruct inverts
-    to build masking()'s background_mask) - see photometric_loss's own
-    docstring for why (unmasked, the background's near-free reconstruction
-    dilutes the gradient signal on the face region). VGG stays unmasked: its
-    input must remain the full natural image (a partially blacked-out image
-    would corrupt its pretrained features), and masking its loss instead
-    would require resizing the mask independently per block - left for a
-    follow-up if the face region still lacks structure after this change."""
+    photometric is currently unmasked (full-image L1) - photometric_loss
+    supports an optional face-region mask (see its own docstring), tried
+    briefly to concentrate gradient on the harder face region rather than the
+    near-free background, but reverted alongside the VGG_LOSS_WEIGHT cut: the
+    combination left the UNet's reconstruction a noisy/checkerboard mess
+    rather than the smoother (if blurry) output it produced unmasked - the
+    mask param is kept, not deleted, in case it's worth revisiting once VGG's
+    weight is back to providing enough perceptual/structural regularization
+    on its own."""
     valid_recon = batch_2d["flag_face_mask_valid"]
     reconstructed, projected_fan, projected_mp = _render_and_reconstruct(
         flame, renderer, unet, face_probabilities, encoded, batch_2d["pixel_values"], batch_2d["face_mask"],
         valid_recon,
     )
 
-    photometric = gated_loss(
-        photometric_loss, valid_recon, reconstructed, batch_2d["pixel_values"], batch_2d["face_mask"].unsqueeze(1)
-    )
+    photometric = gated_loss(photometric_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
     vgg = gated_loss(vgg_loss, valid_recon, reconstructed, batch_2d["pixel_values"])
     emotion_term = gated_loss(
         lambda r, t: emotion_loss(r, t, emotion_net), valid_recon, reconstructed, batch_2d["pixel_values"]
@@ -658,7 +656,13 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
     docstring) via training.loss_utils.next_batch, which restarts each loader
     on exhaustion rather than stopping (there's no single "epoch" spanning
     both loaders, since they're drawn from at different relative rates under
-    round-robin - see training/config.py's Stage2Config docstring)."""
+    round-robin - see training/config.py's Stage2Config docstring).
+
+    Also ramps the optimizer's LR linearly over cfg.warmup_steps at the top
+    of the loop (see Stage2Config.warmup_steps' own docstring for why) -
+    computed fresh from `step` every iteration rather than a stateful
+    scheduler, so it's automatically correct across resumes with no extra
+    checkpoint bookkeeping."""
     torch.manual_seed(cfg.seed)
     rank, world_size, local_rank, device = setup_distributed(fallback_device=cfg.device)
 
@@ -759,6 +763,11 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
         step = start_step - 1  # in case cfg.num_steps <= start_step, so the final-checkpoint save below still has a defined step
 
         for step in range(start_step, cfg.num_steps):
+            if cfg.warmup_steps > 0:
+                lr_scale = min(1.0, (step + 1) / cfg.warmup_steps)
+                for group in optimizer.param_groups:
+                    group["lr"] = cfg.learning_rate * lr_scale
+
             pass_type = cfg.pass_pattern[step % len(cfg.pass_pattern)]
 
             if pass_type == "A":

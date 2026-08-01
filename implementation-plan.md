@@ -140,7 +140,7 @@ Notation: I input image, I′ = UNet output, M predicted mesh, V vertices.
 
 | Loss | Definition | Applied to |
 |---|---|---|
-| Photometric | L1(I′, I), restricted to the face region (XSeg face_mask) | 2D recon pass |
+| Photometric | L1(I′, I) | 2D recon pass |
 | VGG | L1 of VGG features of I′ vs I | 2D recon pass |
 | Landmark | L2 of projected 3D landmarks vs detected 2D landmarks; includes eye-closure and mouth/lip-closure terms (SMIRK/DECA-style) | pretraining + recon pass |
 | MICA shape distillation | L2 between predicted β and MICA's predicted β | pretraining + recon pass |
@@ -150,7 +150,7 @@ Notation: I input image, I′ = UNet output, M predicted mesh, V vertices.
 | Expression cycle consistency | augment ψ (permutation / perturbation / template injection / zeroing, with jaw+eyelid co-augmentation), render via UNet with **pixel transfer**, re-encode; L2(ψ̂, ψaug) (SMIRK Eq. 2) | augmentation pass |
 | Identity (β) cycle consistency | same cycle; L2 between re-encoded β and original β. Applied on **both** alternations (encoder update and UNet update) — deviation from SMIRK (where Eβ is frozen); acts as an additional encoder disentanglement signal here. Note: self-consistency only — MICA + Lvc remain the accuracy anchors. | augmentation pass |
 | Temporal smoothness | **Velocity** penalty (L1, mean absolute first difference, \|p(t) − p(t+1)\|) applied uniformly to expression (+eyelids), jaw, camera+global-rotation, and shape parameters — discourages frame-to-frame jumps while tolerating smooth, sustained motion. (Originally an acceleration/L2 formulation on expression/jaw/camera; switched to velocity/L1 after Stage 2 training was observed to collapse to a near-fixed mesh — the L2 acceleration term's quadratic growth on real motion over-suppressed genuine expressiveness.) | temporal pass |
-| Regularization | L2 on expression parameters (and standard FLAME param regularizers - shape, jaw) | all passes |
+| Regularization | L2 on expression parameters (and standard FLAME param regularizers - shape, jaw); plus a log-ratio penalty on camera scale toward a reference value (~7, matching Stage 1's own converged scale) - added after observing unchecked scale drift in Stage 2, unlike shape/expression/jaw's zero-centered priors, scale is strictly positive and multiplicative so it needs a nonzero reference, not zero | all passes |
 
 Starting loss weights (from SMIRK): cycle 10, landmark 100, VGG 10 (lowered in two steps to 0.1 — 1, then 0.1 — after measuring VGG at ~91% of Pass A's gradient at the original weight; see model/constants.py), photometric 1, emotion 1. TokenFace anchors: mesh λmesh = 2.0, Lvc λvc = 1.2, 2D/3D balance 0.4/0.6, regularization 1e-4 (uniform across shape/expression/jaw - TokenFace uses one weight for all FLAME params, unlike SMIRK's differentiated per-parameter weights). For losses with no published anchor, starting guesses (tune these first on the sign language dev splits): MICA shape distillation 1.0; β identity cycle consistency 10 (mirroring the expression cycle weight, per SMIRK's "similar to Eq. 2"); temporal smoothness — velocity term 0.1 (lowered from an original 1.0 after the fixed-mesh collapse noted above; keep smoothness weight low initially and raise only if jitter persists — over-weighting damps mouthings). All weights are config knobs.
 

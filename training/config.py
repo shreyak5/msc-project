@@ -87,6 +87,21 @@ class Stage2Config:
     # overall) happen before flipping which side updates. Default 1 =
     # alternates every single Pass B call.
     pass_b_alternation_period: int = 1
+    # Linear LR ramp from learning_rate/warmup_steps up to the full
+    # learning_rate over the first warmup_steps steps, then flat. Added after
+    # observing landmark loss jump ~100x within 150 steps of Stage 2 starting -
+    # Stage 2 reuses Stage 1's flat LR verbatim (no schedule/warmup either
+    # stage) and builds a brand-new, freshly-reset Adam optimizer (no
+    # momentum/variance carried over from Stage 1) right as several
+    # large-magnitude, previously-nonexistent losses (photometric/VGG/emotion/
+    # cycle, plus a randomly-initialized UNet) start contributing gradient to
+    # an already-converged svit/heads - a flat full-LR Adam start is a shock
+    # to that converged checkpoint. 0 disables warmup (flat LR throughout,
+    # the old behavior). Driven entirely by the training loop's own `step`
+    # counter (training/stage2.py's train()), which already resumes correctly
+    # from a checkpoint - so this never re-triggers on a resume past
+    # warmup_steps, no separate state needs saving/loading.
+    warmup_steps: int = 1000
     datasets_yaml_path: str = str(DEFAULT_DATASETS_YAML)
     # Resume Stage 2's own training from this checkpoint file - unlike
     # stage1_checkpoint_pth (one-time seed), this is checked on every run.

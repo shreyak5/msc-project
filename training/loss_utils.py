@@ -18,7 +18,7 @@ import torch
 
 from dataset_processing.dataloading.combined_loader import CombinedFaceLoader
 from model import constants
-from model.losses.regularization import l2_regularization
+from model.losses.regularization import l2_regularization, log_scale_regularization
 
 
 def gated_loss(loss_fn: Callable[..., torch.Tensor], valid_mask: torch.Tensor, *tensors: torch.Tensor) -> torch.Tensor:
@@ -36,18 +36,36 @@ def gated_loss(loss_fn: Callable[..., torch.Tensor], valid_mask: torch.Tensor, *
 
 
 def regularization_loss(encoded: dict[str, torch.Tensor]) -> torch.Tensor:
-    """Shape/expression/jaw only (Sec 6: "L2 on expression parameters (and
-    standard FLAME param regularizers - shape, jaw)") - deliberately not camera:
-    zero isn't a sensible prior for scale (degenerate) or rotation (would bias
-    against genuinely non-frontal poses, which matter here given sign language
-    video's real head-orientation variation), unlike shape/expression's
-    zero-centered PCA coefficients where zero legitimately means "neutral".
-    Applied in every pass (Sec 6: "Regularization | ... | all passes")."""
-    return (
+    """Shape/expression/jaw (Sec 6: "L2 on expression parameters (and standard
+    FLAME param regularizers - shape, jaw)"), plus camera scale if present in
+    `encoded` (see below) - applied in every pass (Sec 6: "Regularization |
+    ... | all passes").
+
+    Rotation is still deliberately unregularized: zero isn't a sensible prior
+    for it (would bias against genuinely non-frontal poses, which matter here
+    given sign language video's real head-orientation variation), unlike
+    shape/expression's zero-centered PCA coefficients where zero legitimately
+    means "neutral". Scale WAS in that same "no sensible zero prior" boat
+    (still true - see log_scale_regularization's own docstring for why it
+    regularizes toward a reference value instead of 0) but empirically needs
+    one anyway: measured drifting well below its Stage-1-converged value
+    (~7.4) across multiple Stage 2 runs, with nothing else anchoring it.
+
+    `"scale" in encoded` gate: one caller (Stage 2 Pass B's cycle consistency,
+    training/stage2.py's run_pass_b) intentionally passes a filtered
+    {"shape", "expression", "jaw"}-only dict here (not the full re_encoded
+    output) - this degrades gracefully there (no scale term, matching the
+    prior behavior) rather than KeyError."""
+    total = (
         constants.REG_SHAPE_WEIGHT * l2_regularization(encoded["shape"])
         + constants.REG_EXPRESSION_WEIGHT * l2_regularization(encoded["expression"])
         + constants.REG_JAW_WEIGHT * l2_regularization(encoded["jaw"])
     )
+    if "scale" in encoded:
+        total = total + constants.REG_CAMERA_SCALE_WEIGHT * log_scale_regularization(
+            encoded["scale"], constants.CAMERA_SCALE_REFERENCE
+        )
+    return total
 
 
 def concat_category_fields(batch: dict, categories: list[str], keys: list[str], device: str) -> dict[str, torch.Tensor]:

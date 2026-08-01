@@ -138,6 +138,24 @@ REG_EXPRESSION_WEIGHT = 1e-4
 REG_JAW_WEIGHT = 1e-4
 REG_SHAPE_WEIGHT = 1e-4
 
+# Camera scale regularization (model/losses/regularization.py's
+# log_scale_regularization) - a later, separate addition, not part of the
+# uniform-1e-4 group above (see that function's own docstring for the log-
+# ratio-toward-a-reference rationale, distinct from plain L2-toward-zero).
+# CAMERA_SCALE_REFERENCE=7.0 matches both SMIRK's own hand-chosen camera-
+# scale init constant (src/smirk_encoder.py's PoseEncoder) and this project's
+# own Stage 1 pretrain endpoint (measured ~7.4, same weak-perspective
+# convention). REG_CAMERA_SCALE_WEIGHT=0.1 - deliberately NOT matched to the
+# 1e-4 group: measured log(scale/7)^2 at real observed collapsed scale values
+# (~2.7-4.4 across Stage 2 runs) is order 0.1-0.9, and landmark/closure/etc.
+# (the terms currently outvoting camera scale with no anchor at all) are
+# order 0.01-0.5 raw - 1e-4 would make this term contribute <1e-4 to the
+# total loss, negligible next to those, i.e. present in code but not in
+# practice. 0.1 is a starting guess (100x the uniform group) chosen to be
+# competitive with those terms instead; revisit empirically.
+CAMERA_SCALE_REFERENCE = 7.0
+REG_CAMERA_SCALE_WEIGHT = 0.1
+
 # Mesh (3D) region-weighted vertex loss (model/losses/mesh.py, Sec 6). Per-vertex
 # weight built from FLAME_masks.pkl regions (RENDERER_FLAME_MASKS_PATH - same asset
 # already used by the renderer). Not derived from SMIRK/TokenFace's own code (SMIRK
