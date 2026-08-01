@@ -82,6 +82,8 @@ def compute_2d_losses(
 def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
     torch.manual_seed(cfg.seed)
     rank, world_size, local_rank, device = setup_distributed(fallback_device=cfg.device)
+    if is_main_process(rank):
+        print(f"config: {cfg}")
 
     try:
         svit = SViT().to(device)

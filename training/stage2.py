@@ -665,6 +665,8 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
     checkpoint bookkeeping."""
     torch.manual_seed(cfg.seed)
     rank, world_size, local_rank, device = setup_distributed(fallback_device=cfg.device)
+    if is_main_process(rank):
+        print(f"config: {cfg}")
 
     try:
         svit = SViT().to(device)
