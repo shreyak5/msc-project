@@ -72,11 +72,15 @@ from __future__ import annotations
 
 import argparse
 
+import numpy as np
 import torch
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader
 
 from dataset_processing.dataloading.combined_loader import build_combined_loader
 from dataset_processing.dataloading.config import load_dataloader_config
+from evaluation.metrics import per_frame_euclidean_error, per_frame_vertex_error, summarize
 from model import constants
 from model.emotion.emotion_net import EmotionNet
 from model.encoder import SViT
@@ -97,7 +101,8 @@ from model.losses.temporal_smoothness import velocity_penalty
 from model.temporal import TemporalTransformer
 from training.checkpoint import load_checkpoint, save_checkpoint
 from training.config import Stage2Config, load_stage2_config
-from training.distributed import cleanup_distributed, is_distributed, is_main_process, setup_distributed
+from training.distributed import cleanup_distributed, is_distributed, is_main_process, setup_distributed, unwrap_model
+from training.eval_loaders import build_eval_loaders
 from training.loss_utils import concat_category_fields, gated_loss, next_batch, regularization_loss
 from training.losses_3d import compute_3d_losses
 
@@ -257,6 +262,7 @@ def run_pass_a(
     emotion_net: EmotionNet, vgg_loss: VGGPerceptualLoss, region_weights: torch.Tensor,
     face_probabilities: torch.Tensor, optimizer: torch.optim.Optimizer,
     batch_2d: dict[str, torch.Tensor], batch_3d: dict[str, torch.Tensor], subject_ids_3d: list[str], device: str,
+    freeze_encoder: bool = False,
 ) -> dict[str, float]:
     """One Pass A training step: computes losses, applies the two-backward-call
     emotion carve-out, and steps the optimizer - unlike Stage 1's compute_2d_losses/
@@ -264,13 +270,25 @@ def run_pass_a(
     this owns its own zero_grad/backward/step calls, since the emotion carve-out
     can't be expressed as a single combined backward (see module docstring).
 
-    Explicitly sets svit/heads/unet requires_grad_(True) at entry rather than
-    assuming it's already the case: Pass B alternates svit/heads and unet's
-    requires_grad between calls (see run_pass_b), and requires_grad is a
-    persistent property of the nn.Module, not reset between calls - without
-    this, a Pass A call immediately following a Pass B call that happened to
-    leave the encoder frozen would silently train nothing on it that step."""
-    for p in list(svit.parameters()) + list(heads.parameters()) + list(unet.parameters()):
+    Explicitly sets svit/heads/unet requires_grad_ at entry rather than assuming
+    it's already the case: Pass B alternates svit/heads and unet's requires_grad
+    between calls (see run_pass_b), and requires_grad is a persistent property of
+    the nn.Module, not reset between calls - without this, a Pass A call
+    immediately following a Pass B call that happened to leave the encoder frozen
+    would silently train nothing on it that step.
+
+    freeze_encoder (Stage2Config.freeze_encoder): keeps svit/heads at
+    requires_grad_(False) even here - a UNet-warmup phase (train the
+    reconstruction pathway against a STABLE, Stage-1-converged geometry signal
+    before letting the encoder move again), not just a per-pass toggle.
+    landmark/mesh/mica/reg still get computed and logged as usual for
+    monitoring (cheap relative to the rest of the forward pass), but with
+    svit/heads frozen their backward produces no gradient anywhere - only
+    photometric/VGG/emotion (which route through unet) actually train
+    anything during this phase. unet itself is never frozen by this flag."""
+    for p in list(svit.parameters()) + list(heads.parameters()):
+        p.requires_grad_(not freeze_encoder)
+    for p in unet.parameters():
         p.requires_grad_(True)
 
     optimizer.zero_grad()
@@ -299,7 +317,21 @@ def run_pass_a(
     # retain_graph=True: the UNet's output tensor (and everything upstream of
     # it - UNet, FLAME, encoder) is reused by emotion_loss_scaled's backward
     # below, so the graph can't be freed after this first call.
-    loss_2d_scaled.backward(retain_graph=True)
+    #
+    # requires_grad guard: normally unconditional - loss_2d_excl_emotion's own
+    # reg_loss term (regularization_loss(encoded)) is ungated by valid_recon,
+    # so it's always grad-connected to svit/heads regardless of batch
+    # validity, guaranteeing loss_2d_scaled has SOME trainable-parameter path
+    # even in the pathological all-invalid-batch case. With freeze_encoder,
+    # that guarantee is gone (reg_loss's only path was svit/heads, now
+    # frozen) - the sole remaining path is photometric/vgg through unet,
+    # which itself is zero/disconnected when valid_recon.any() is False (see
+    # _render_and_reconstruct: reconstructed stays all-zero, unet never
+    # runs). Same disconnected-tensor crash as loss_3d_scaled below in that
+    # combination (rare - needs a fully-invalid 2D batch - but possible, and
+    # this function no longer has a structural guarantee against it).
+    if loss_2d_scaled.requires_grad:
+        loss_2d_scaled.backward(retain_graph=True)
 
     unet_params = list(unet.parameters())
     for p in unet_params:
@@ -307,8 +339,8 @@ def run_pass_a(
     # emotion_term is gated by flag_face_mask_valid - if EVERY sample in
     # batch_2d happens to be invalid, it's a disconnected zero tensor with no
     # grad_fn (same edge case already handled in run_pass_b), and calling
-    # backward() on it would crash. loss_2d_scaled doesn't have this problem
-    # (its own regularization term is ungated, always grad-connected).
+    # backward() on it would crash - same guard, same reason as
+    # loss_2d_scaled's own guard above.
     if emotion_loss_scaled.requires_grad:
         emotion_loss_scaled.backward()
     for p in unet_params:
@@ -317,10 +349,20 @@ def run_pass_a(
     # 3D branch: forward + backward only now, after the 2D branch's graph has
     # been fully backpropped (both calls above) and freed. compute_3d_losses'
     # own regularization term is likewise always ungated/grad-connected
-    # (training/losses_3d.py), so no requires_grad guard is needed here either.
+    # (training/losses_3d.py) UNLESS freeze_encoder - mesh/Lvc/reg_3d only
+    # ever touch svit/heads (3D batches get direct 3D vertex supervision, no
+    # renderer/unet in that path at all - training/losses_3d.py's
+    # compute_3d_losses calls encode_image+flame only), so with the encoder
+    # frozen loss_3d_scaled has no trainable-parameter connection whatsoever -
+    # a fully disconnected tensor, and backward() on that crashes (confirmed:
+    # "RuntimeError: element 0 of tensors does not require grad and does not
+    # have a grad_fn" from exactly this call, the first real run of a
+    # freeze_encoder=True config). Same requires_grad guard as the emotion
+    # carve-out above, same reason.
     loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
     loss_3d_scaled = constants.LOSS_BALANCE_3D * loss_3d
-    loss_3d_scaled.backward()
+    if loss_3d_scaled.requires_grad:
+        loss_3d_scaled.backward()
 
     optimizer.step()
 
@@ -649,6 +691,121 @@ def run_pass_c(
     return metrics
 
 
+@torch.no_grad()
+def run_periodic_eval_local(
+    svit: SViT, tt: TemporalTransformer, heads: ComponentHeads, flame: FLAME, renderer: Renderer,
+    eval_loaders: dict[str, DataLoader], device: str,
+) -> dict[str, dict[str, np.ndarray]]:
+    """Runs THIS RANK'S OWN SHARD of the fixed dev-clip subset (training/
+    eval_loaders.py's build_eval_loaders shards it across every rank via
+    DistributedSampler) through the same encode_video -> flame -> renderer
+    forward path run_pass_c's _encode_category/_render_and_reconstruct use -
+    but stops at the projected landmarks/vertices, skipping the UNet/masking/
+    photometric portion entirely (not needed for landmark/temporal-smoothness
+    scoring). flame_out["landmarks_fan"] is already FLAME's full 68-point set
+    (the [:17] boundary-only slicing only happens in the training LOSS
+    functions, not in FLAME/the renderer), so it compares directly against the
+    landmarks_fan_full cache field with no extra projection work.
+
+    Returns RAW, unsummarized per-frame(-pair) error arrays per dataset -
+    aggregation across ranks happens separately in
+    aggregate_and_print_eval_results, since combining already-summarized
+    per-rank statistics (e.g. averaging medians) isn't valid."""
+    svit, tt, heads = unwrap_model(svit), unwrap_model(tt), unwrap_model(heads)
+
+    results: dict[str, dict[str, np.ndarray]] = {}
+    for dataset_name, loader in eval_loaders.items():
+        landmark_fan_errors: list[float] = []
+        landmark_mp_errors: list[float] = []
+        temporal_errors: list[float] = []
+
+        for batch in loader:
+            pixel_values = batch["pixel_values"].to(device)
+            batch_size, num_frames = pixel_values.shape[:2]
+            frame_indices = torch.arange(num_frames, device=device).unsqueeze(0).expand(batch_size, -1)
+            encoded = encode_video(
+                svit, tt, heads, pixel_values, batch["visibility_ratio"].to(device),
+                frame_indices, batch["flag_visibility_valid"].to(device), batch["valid_mask"].to(device),
+            )
+            encoded_flat = {k: _flatten(v, batch_size, num_frames) for k, v in encoded.items()}
+
+            cam_for_proj = torch.cat([encoded_flat["scale"], encoded_flat["translation"]], dim=-1)
+            flame_out = flame(
+                encoded_flat["shape"], encoded_flat["expression"], encoded_flat["jaw"],
+                encoded_flat["eyelid"], encoded_flat["rotation"],
+            )
+            render_out = renderer(
+                flame_out["vertices"], cam_for_proj,
+                landmarks_fan=flame_out["landmarks_fan"], landmarks_mp=flame_out["landmarks_mp"],
+            )
+            projected_fan = render_out["transformed_landmarks_fan"].cpu().numpy()
+            projected_mp = render_out["transformed_landmarks_mp"].cpu().numpy()
+
+            # real_frame_mask excludes tail padding (see compute_2d_video_losses'
+            # own identical use of this AND pattern), on top of each field's own
+            # per-frame detection-validity flag.
+            real_frame_mask_flat = _flatten(batch["valid_mask"], batch_size, num_frames).numpy()
+            gt_fan = _flatten(batch["landmarks_fan_full"], batch_size, num_frames).numpy()
+            flag_fan = _flatten(batch["flag_landmarks_fan_full_valid"], batch_size, num_frames).numpy() & real_frame_mask_flat
+            gt_mp = _flatten(batch["landmarks_mp"], batch_size, num_frames).numpy()
+            flag_mp = _flatten(batch["flag_landmarks_mp_valid"], batch_size, num_frames).numpy() & real_frame_mask_flat
+
+            for i in range(projected_fan.shape[0]):
+                landmark_fan_errors.append(
+                    per_frame_euclidean_error(projected_fan[i], gt_fan[i]) if flag_fan[i] else np.nan
+                )
+                landmark_mp_errors.append(
+                    per_frame_euclidean_error(projected_mp[i], gt_mp[i]) if flag_mp[i] else np.nan
+                )
+
+            vertices = flame_out["vertices"].reshape(batch_size, num_frames, *flame_out["vertices"].shape[1:])
+            vertices = vertices.cpu().numpy()
+            valid_mask_np = batch["valid_mask"].numpy()
+            for b in range(batch_size):
+                for t in range(1, num_frames):
+                    if valid_mask_np[b, t - 1] and valid_mask_np[b, t]:
+                        temporal_errors.append(per_frame_vertex_error(vertices[b, t - 1], vertices[b, t]))
+                    else:
+                        temporal_errors.append(np.nan)
+
+        results[dataset_name] = {
+            "landmark_fan": np.array(landmark_fan_errors, dtype=np.float64),
+            "landmark_mp": np.array(landmark_mp_errors, dtype=np.float64),
+            "temporal_smoothness": np.array(temporal_errors, dtype=np.float64),
+        }
+    return results
+
+
+def aggregate_and_print_eval_results(
+    local_results: dict[str, dict[str, np.ndarray]], rank: int, world_size: int, step: int,
+) -> None:
+    """Combines every rank's raw per-frame error arrays (run_periodic_eval_local)
+    into one pooled evaluation/metrics.py summarize() per dataset/metric,
+    printed only on rank 0. A single dist.gather_object collective - every rank
+    reaches this at the same `step` (the training loop is lockstep-synchronized
+    across ranks: `step` is the same loop variable on every rank), so this is a
+    bounded, ordinary collective, not a stall.
+
+    Combining RAW arrays (not each rank's own already-summarized mean/median/
+    std) is required for correctness: those can't be recombined into the
+    correct pooled statistic after the fact, especially the median."""
+    if is_distributed():
+        gathered: list[dict[str, dict[str, np.ndarray]]] | None = [None] * world_size if rank == 0 else None
+        dist.gather_object(local_results, gathered, dst=0)
+        if rank != 0:
+            return
+        all_results = gathered
+    else:
+        all_results = [local_results]
+
+    for dataset_name in all_results[0]:
+        summaries = {
+            metric_name: summarize(np.concatenate([r[dataset_name][metric_name] for r in all_results]))
+            for metric_name in all_results[0][dataset_name]
+        }
+        print(f"step {step} eval[{dataset_name}]: {summaries}")
+
+
 def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
     """The outer three-pass scheduler: round-robins through cfg.pass_pattern
     (default ["A","B","C"]), drawing batches from one of two independently-
@@ -693,10 +850,13 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
 
         start_step = 0
         if checkpoint_pth is not None:
-            loaded_step = load_checkpoint(
-                checkpoint_pth, {"svit": svit, "heads": heads, "unet": unet, "tt": tt}, optimizer, device,
-            )
-            start_step = loaded_step + 1
+            if cfg.resume_optimizer_and_step:
+                loaded_step = load_checkpoint(
+                    checkpoint_pth, {"svit": svit, "heads": heads, "unet": unet, "tt": tt}, optimizer, device,
+                )
+                start_step = loaded_step + 1
+            else:
+                load_checkpoint(checkpoint_pth, {"svit": svit, "heads": heads, "unet": unet, "tt": tt}, device=device)
         else:
             # One-time seed from Stage 1 - svit+heads only, no optimizer, no
             # unet/tt (Stage 1 never saved any) - only on a fresh run (no
@@ -746,6 +906,16 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
         clip_loader.set_epoch(clip_epoch)
         clip_iterator = iter(clip_loader)
 
+        # Built once per rank, not per eval round (see training/eval_loaders.py) -
+        # every rank builds its own shard, since periodic eval below runs on
+        # every rank in parallel (not rank-0-only), gathering results at the end.
+        eval_loaders = None
+        if cfg.eval.interval_steps > 0:
+            eval_loaders = build_eval_loaders(
+                dataloader_cfg, cfg.datasets_yaml_path, cfg.eval.datasets,
+                cfg.eval.num_clips_per_dataset, rank, world_size,
+            )
+
         keys_2d_a = [
             "pixel_values", "face_mask", "flag_face_mask_valid",
             "mica_shape", "flag_mica_valid",
@@ -780,6 +950,7 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
                 metrics = run_pass_a(
                     svit, heads, flame, renderer, unet, emotion_net, vgg_loss, region_weights,
                     face_probabilities, optimizer, batch_2d, batch_3d, subject_ids_3d, device,
+                    freeze_encoder=cfg.freeze_encoder,
                 )
             elif pass_type == "B":
                 batch, frame_pool_iterator, frame_pool_epoch = next_batch(frame_pool_loader, frame_pool_iterator, frame_pool_epoch)
@@ -808,6 +979,21 @@ def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
                     cfg.checkpoint_dir, step, {"svit": svit, "heads": heads, "unet": unet, "tt": tt}, optimizer,
                 )
                 print(f"saved checkpoint: {path}")
+
+            # Runs on EVERY rank (not is_main_process-gated): each rank evaluates
+            # its own shard of the fixed dev-clip subset in parallel, then
+            # aggregate_and_print_eval_results' collective gather needs every
+            # rank to reach it together. Entirely inside no_grad, never touches
+            # optimizer/gradients, so it cannot perturb training state.
+            if cfg.eval.interval_steps > 0 and step % cfg.eval.interval_steps == 0:
+                svit.eval()
+                heads.eval()
+                tt.eval()
+                local_results = run_periodic_eval_local(svit, tt, heads, flame, renderer, eval_loaders, device)
+                aggregate_and_print_eval_results(local_results, rank, world_size, step)
+                svit.train()
+                heads.train()
+                tt.train()
 
         # Unconditional final save: cfg.num_steps isn't guaranteed to be a
         # multiple of checkpoint_interval_steps (and either could change

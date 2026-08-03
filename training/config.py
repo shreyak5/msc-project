@@ -57,6 +57,26 @@ def load_pretrain_config(path: str | Path) -> PretrainConfig:
 
 
 @dataclasses.dataclass
+class EvalConfig:
+    """Periodic dev-set eval during Stage 2 training (training/stage2.py's
+    run_periodic_eval_local/aggregate_and_print_eval_results) - reports a
+    landmark score and a temporal-smoothness score per dataset, every
+    interval_steps, against a fixed dev-split clip subset of `datasets`."""
+    # 0 disables periodic eval entirely (no eval loaders built, no eval step
+    # ever runs) - analogous to checkpoint_interval_steps/log_interval_steps,
+    # which are always assumed positive; this field is the one exception that
+    # supports "off".
+    interval_steps: int = 500
+    # TOTAL clip count per dataset per eval round, summed across all ranks
+    # (training/eval_loaders.py shards this via DistributedSampler across every
+    # rank, not just rank 0) - so this scales with world_size for a given
+    # wall-clock budget, not a per-rank count.
+    num_clips_per_dataset: int = 256
+    datasets: list[str] = dataclasses.field(
+        default_factory=lambda: ["how2sign", "phoenix2014t", "csl_daily"])
+
+
+@dataclasses.dataclass
 class Stage2Config:
     seed: int
     # One shared LR for the combined svit+heads+unet+tt optimizer (training/
@@ -102,15 +122,40 @@ class Stage2Config:
     # from a checkpoint - so this never re-triggers on a resume past
     # warmup_steps, no separate state needs saving/loading.
     warmup_steps: int = 1000
+    # Keeps svit/heads frozen (requires_grad_(False)) in Pass A regardless of
+    # that pass's own default-unfreeze behavior - see run_pass_a's own
+    # docstring. Intended for a UNet-warmup phase: train the reconstruction
+    # pathway (photometric/VGG/emotion, all routed through unet) against a
+    # STABLE geometry signal - normally svit/heads/unet all move together in
+    # Pass A, which means unet is chasing a moving target on top of everything
+    # else destabilizing at once. Only meaningful when pass_pattern excludes
+    # "B"/"C" (both would still move the encoder) - e.g. pass_pattern: [A].
+    # False (default) preserves the original always-unfrozen-in-Pass-A
+    # behavior.
+    freeze_encoder: bool = False
     datasets_yaml_path: str = str(DEFAULT_DATASETS_YAML)
     # Resume Stage 2's own training from this checkpoint file - unlike
     # stage1_checkpoint_pth (one-time seed), this is checked on every run.
     # None (unset in the YAML) means a fresh Stage 2 run.
     checkpoint_pth: str | None = None
+    # When checkpoint_pth is set, whether to also resume its optimizer state
+    # and step count (True, original behavior) or just seed svit/heads/unet/tt
+    # weights from it and start fresh at step 0 with a new optimizer (False) -
+    # e.g. seeding from a unet-warmup-phase checkpoint whose optimizer
+    # momentum only ever moved unet (svit/heads were frozen that whole phase,
+    # see freeze_encoder), which would be stale/meaningless to carry into a
+    # phase where they move again. Ignored when checkpoint_pth is None.
+    resume_optimizer_and_step: bool = True
+    eval: EvalConfig = dataclasses.field(default_factory=EvalConfig)
 
 
 def load_stage2_config(path: str | Path) -> Stage2Config:
     path = Path(path)
     with path.open() as f:
         raw = yaml.safe_load(f)
+    # Mirrors load_dataloader_config's DetectorConfig(**raw["detector"]) pattern:
+    # a plain **raw unpack would leave `eval` as a bare dict, not an EvalConfig,
+    # if the YAML supplies one.
+    if "eval" in raw:
+        raw["eval"] = EvalConfig(**raw["eval"])
     return Stage2Config(**raw)

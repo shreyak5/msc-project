@@ -9,7 +9,7 @@ import numpy as np
 
 from dataset_processing.dataloading.crop_cache import get_cropped_face
 from model import constants
-from model.losses.landmark import NUM_FAN_BOUNDARY_POINTS
+from model.losses.landmark import NUM_FAN_BOUNDARY_POINTS, NUM_FAN_TOTAL_POINTS
 from preprocessing.cropping import get_cropped_face_box
 from utils.cache_utils import bucket_container_path, entry_key, read_bucket_entry, sentinel_path, write_bucket_entry
 from utils.landmark_utils import run_fan, run_mediapipe
@@ -64,6 +64,11 @@ class LandmarkResult:
     landmarks_mp: np.ndarray | None = None
     flag_landmarks_mp_valid: bool | None = None
     error: str | None = None
+    # Only populated when compute_landmarks is called with include_fan_full=True
+    # (scripts/patch_landmark_cache_fan_full.py) - the full 68-point FAN set,
+    # additive to the 17-point landmarks_fan above (see that script's docstring).
+    landmarks_fan_full: np.ndarray | None = None
+    flag_landmarks_fan_full_valid: bool | None = None
 
 
 def compute_landmarks(
@@ -77,6 +82,7 @@ def compute_landmarks(
     crop_cache_root: str | Path,
     crop_scale: float,
     image_size: int,
+    include_fan_full: bool = False,
 ) -> LandmarkResult:
     """Pure computation with respect to landmark_cache's OWN cache - no
     landmark_cache I/O, no sentinel writes. Callers (get_landmarks below, and
@@ -100,8 +106,17 @@ def compute_landmarks(
     derived box the original detected face occupies within any such crop (see
     its own docstring) - no second, redundant detector call. MediaPipe's own
     run_mediapipe never took a detector at all (its own detect() call handles
-    that internally, opaquely)."""
+    that internally, opaquely).
+
+    include_fan_full: when True, additionally normalizes FAN's full 68-point
+    output (run_fan is already called for the 17-point landmarks_fan below, so
+    this reuses that same call rather than re-running FAN) into
+    landmarks_fan_full/flag_landmarks_fan_full_valid. Only
+    scripts/patch_landmark_cache_fan_full.py passes True; every other caller
+    (get_landmarks, scripts/prewarm_landmark_cache.py) leaves this False, so
+    landmarks_fan/landmarks_mp's own shape/values are completely unaffected."""
     fan_fallback = np.zeros((NUM_FAN_BOUNDARY_POINTS, 2), dtype=np.float32)
+    fan_full_fallback = np.zeros((NUM_FAN_TOTAL_POINTS, 2), dtype=np.float32)
     mp_fallback = np.zeros((len(_CURATED_MEDIAPIPE_INDICES), 2), dtype=np.float32)
 
     try:
@@ -117,15 +132,20 @@ def compute_landmarks(
             status="ok",
             landmarks_fan=fan_fallback, flag_landmarks_fan_valid=False,
             landmarks_mp=mp_fallback, flag_landmarks_mp_valid=False,
+            landmarks_fan_full=(fan_full_fallback if include_fan_full else None),
+            flag_landmarks_fan_full_valid=(False if include_fan_full else None),
         )
 
     fan_box = get_cropped_face_box(image_size=image_size, scale=crop_scale)
     landmarks_fan, _scores = run_fan(get_fan_predictor(), crop, fan_box)
     if landmarks_fan is None:
         landmarks_fan_out, flag_fan_valid = fan_fallback, False
+        landmarks_fan_full_out, flag_fan_full_valid = fan_full_fallback, False
     else:
         landmarks_fan_out = _normalize(landmarks_fan[:NUM_FAN_BOUNDARY_POINTS].astype(np.float32), image_size)
         flag_fan_valid = True
+        landmarks_fan_full_out = _normalize(landmarks_fan[:NUM_FAN_TOTAL_POINTS].astype(np.float32), image_size)
+        flag_fan_full_valid = True
 
     landmarks_mp_raw = run_mediapipe(get_mediapipe_detector(), crop)
     if landmarks_mp_raw is None:
@@ -139,6 +159,8 @@ def compute_landmarks(
         status="ok",
         landmarks_fan=landmarks_fan_out, flag_landmarks_fan_valid=flag_fan_valid,
         landmarks_mp=landmarks_mp_out, flag_landmarks_mp_valid=flag_mp_valid,
+        landmarks_fan_full=(landmarks_fan_full_out if include_fan_full else None),
+        flag_landmarks_fan_full_valid=(flag_fan_full_valid if include_fan_full else None),
     )
 
 
@@ -230,3 +252,41 @@ def get_landmarks(
     write_bucket_entry(cache_root, dataset, sample_id, key, buffer.getvalue())
 
     return result_dict
+
+
+def get_landmarks_fan_full(
+    cache_root: str | Path,
+    dataset: str,
+    sample_id: str,
+    frame_index: int | None,
+) -> tuple[np.ndarray, bool]:
+    """Read-only accessor for the additive `landmarks_fan_full` field patched
+    into landmark_cache's existing bucket entries by
+    scripts/patch_landmark_cache_fan_full.py (full 68-point FAN, normalized to
+    [-1,1] - see that script's docstring). Unlike get_landmarks above, this has
+    NO compute-on-miss fallback: it's only ever called by the dev-set
+    periodic-eval dataloader (training/eval_loaders.py) for datasets the patch
+    script is expected to have already covered, and recomputing FAN from inside
+    a DataLoader worker on every miss would silently redo the same expensive
+    detector call every epoch rather than surfacing the gap.
+
+    Returns (landmarks_fan_full (68,2), flag_valid); a missing container,
+    missing key, corrupted entry, or a pre-patch entry without this field all
+    fall back to (zeros((68,2)), False) with a printed warning rather than
+    raising, so a partially-patched cache degrades to "no signal for this
+    frame" instead of crashing eval."""
+    fallback = np.zeros((NUM_FAN_TOTAL_POINTS, 2), dtype=np.float32)
+    container_path = bucket_container_path(cache_root, dataset, sample_id)
+    key = entry_key(sample_id, frame_index)
+    try:
+        cached_bytes = read_bucket_entry(container_path, key)
+        if cached_bytes is not None:
+            cached = np.load(io.BytesIO(cached_bytes))
+            if "landmarks_fan_full" in cached.files:
+                return cached["landmarks_fan_full"], bool(cached["flag_landmarks_fan_full_valid"])
+    except Exception as exc:
+        print(f"warning: corrupted cache entry {key} in {container_path} reading landmarks_fan_full: {exc}")
+        return fallback, False
+
+    print(f"warning: landmarks_fan_full missing for {dataset}/{key} - run scripts/patch_landmark_cache_fan_full.py")
+    return fallback, False

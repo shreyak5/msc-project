@@ -57,6 +57,11 @@ _MEDIAPIPE_EMBEDDING_PATH = _REPO_ROOT / "assets/mediapipe_landmark_embedding/me
 # conventionally the first 17 points, indices 0-16, in the standard iBUG-68 ordering).
 NUM_FAN_BOUNDARY_POINTS = 17
 
+# Full standard iBUG-68 FAN point count (jaw + eyebrows + nose + eyes + mouth).
+# Used by dev-set periodic eval (training/stage2.py), not the training loss above,
+# which stays scoped to NUM_FAN_BOUNDARY_POINTS.
+NUM_FAN_TOTAL_POINTS = 68
+
 # Raw MediaPipe Face Mesh (478-point) index groups defining eye/lip opening pairs
 # (Danecek et al./EMOCA, see module docstring).
 _LEFT_UPPER_EYELID = [398, 384, 385, 386, 387, 388, 466]

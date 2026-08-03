@@ -14,7 +14,7 @@ from dataset_processing.dataloading.detector_pool import get_detector
 from dataset_processing.dataloading.face_parsing_cache import get_face_parsing
 from dataset_processing.dataloading.face_parsing_pool import get_xseg
 from dataset_processing.dataloading.frame_count_cache import load_frame_counts
-from dataset_processing.dataloading.landmark_cache import get_landmarks
+from dataset_processing.dataloading.landmark_cache import get_landmarks, get_landmarks_fan_full
 from dataset_processing.dataloading.landmark_pool import get_fan_predictor, get_mediapipe_detector
 from dataset_processing.dataloading.mesh_io import load_flame_vertices
 from dataset_processing.dataloading.mica_cache import get_mica_shape
@@ -230,6 +230,7 @@ class VideoFaceDataset(Dataset):
         with_face_mask: bool,
         face_parsing_cache_root: str | Path,
         xseg_device: str,
+        with_landmarks_fan_full: bool = False,
     ):
         self.dataset_name = dataset_name
         self.crop_cache_root = Path(crop_cache_root)
@@ -249,6 +250,11 @@ class VideoFaceDataset(Dataset):
         self.with_face_mask = with_face_mask
         self.face_parsing_cache_root = Path(face_parsing_cache_root)
         self.xseg_device = xseg_device
+        # Additive, opt-in: full 68-point FAN landmarks for dev-set periodic eval
+        # (training/eval_loaders.py) only - see get_landmarks_fan_full's own
+        # docstring. Independent of with_landmarks (the 17-point boundary set
+        # used for the training loss), so both can be requested together.
+        self.with_landmarks_fan_full = with_landmarks_fan_full
 
         # Each index entry carries the row's true frame count alongside it (resolved by
         # _rows_with_frame_counts, from a prewarm-built cache or a live probe - never
@@ -292,6 +298,8 @@ class VideoFaceDataset(Dataset):
         flags_landmarks_fan_valid = []
         landmarks_mp_list = []
         flags_landmarks_mp_valid = []
+        landmarks_fan_full_list = []
+        flags_landmarks_fan_full_valid = []
         face_masks = []
         flags_face_mask_valid = []
         visibility_ratios = []
@@ -329,6 +337,12 @@ class VideoFaceDataset(Dataset):
                 flags_landmarks_fan_valid.append(landmarks["flag_landmarks_fan_valid"])
                 landmarks_mp_list.append(torch.from_numpy(landmarks["landmarks_mp"]))
                 flags_landmarks_mp_valid.append(landmarks["flag_landmarks_mp_valid"])
+            if self.with_landmarks_fan_full:
+                landmarks_fan_full, flag_landmarks_fan_full_valid = get_landmarks_fan_full(
+                    self.landmark_cache_root, self.dataset_name, row.sample_id, frame_idx,
+                )
+                landmarks_fan_full_list.append(torch.from_numpy(landmarks_fan_full))
+                flags_landmarks_fan_full_valid.append(flag_landmarks_fan_full_valid)
             # visibility_ratio is always computed (TemporalTransformer needs it for
             # every video category's clips in Pass C, 2D and 3D alike - unlike
             # face_mask, which only 2D categories need for masking -> UNet
@@ -370,6 +384,9 @@ class VideoFaceDataset(Dataset):
             item["flag_landmarks_fan_valid"] = torch.tensor(flags_landmarks_fan_valid, dtype=torch.bool)
             item["landmarks_mp"] = torch.stack(landmarks_mp_list, dim=0)
             item["flag_landmarks_mp_valid"] = torch.tensor(flags_landmarks_mp_valid, dtype=torch.bool)
+        if self.with_landmarks_fan_full:
+            item["landmarks_fan_full"] = torch.stack(landmarks_fan_full_list, dim=0)
+            item["flag_landmarks_fan_full_valid"] = torch.tensor(flags_landmarks_fan_full_valid, dtype=torch.bool)
         return item
 
 
@@ -513,13 +530,19 @@ def build_category_dataset(
     split: str,
     cfg: DataloaderConfig,
     video_mode: Literal["frame_pool", "clip"] = "clip",
+    with_landmarks_fan_full: bool = False,
 ) -> Dataset:
     """video_mode only affects video categories (image categories are always
     single-frame already) - Sec 5.2: frame_pool (one re-sampled random frame per
     access, mixable into image-shaped batches) whenever TT is frozen (Stage 1;
     Stage 2 Pass A/B), clip (a full multi-frame window) for TT training (Stage 2
     Pass C). A single global switch, not per-category: video datasets all switch
-    mode together based on which pass is currently running, not independently."""
+    mode together based on which pass is currently running, not independently.
+
+    with_landmarks_fan_full: additive, opt-in full-68-point FAN landmarks for
+    dev-set periodic eval (training/eval_loaders.py) - only ever threaded into
+    VideoFaceDataset (clip mode); ImageFaceDataset/FramePoolVideoDataset callers
+    never need it, so it's silently ignored for those two paths."""
     with_flame = entry.category in CATEGORIES_3D
     with_mica = entry.category in CATEGORIES_2D
     with_landmarks = entry.category in CATEGORIES_2D
@@ -562,4 +585,5 @@ def build_category_dataset(
         with_mica=with_mica, mica_cache_root=cfg.mica_cache_root, mica_device=cfg.mica_device,
         with_landmarks=with_landmarks, landmark_cache_root=cfg.landmark_cache_root, fan_device=cfg.fan_device,
         with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
+        with_landmarks_fan_full=with_landmarks_fan_full,
     )
