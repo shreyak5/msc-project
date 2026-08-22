@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=prewarm_crop_cache_smoke_test
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/prewarm_crop_cache_smoke_test_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/prewarm_crop_cache_smoke_test_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=4
@@ -15,7 +15,7 @@
 # verified quickly and cheaply before committing to the full multi-hour,
 # 16-task rerun.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=4
 

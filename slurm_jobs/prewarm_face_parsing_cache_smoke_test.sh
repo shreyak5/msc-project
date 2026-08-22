@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=prewarm_face_parsing_cache_smoke_test
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/prewarm_face_parsing_cache_smoke_test_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/prewarm_face_parsing_cache_smoke_test_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=8
@@ -16,7 +16,7 @@
 # 72-task rerun. Also the first real (non-synthetic) rehearsal of the
 # quota-exhaustion fix this whole restructuring exists for.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=8
 

@@ -2,10 +2,10 @@ import pickle
 
 import numpy as np
 
-file1 = "/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/deca_landmark_embedding.npy"
-# file2 = "/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/smirk_landmark_embedding.npy"
-# file2= "/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/flame_static_embedding_68.pkl"
-file2 = "/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/cvthead_landmark_embedding.npy"
+file1 = "/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/deca_landmark_embedding.npy"
+# file2 = "/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/smirk_landmark_embedding.npy"
+# file2= "/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/flame_static_embedding_68.pkl"
+file2 = "/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/cvthead_landmark_embedding.npy"
 
 
 def load(path):

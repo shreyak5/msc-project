@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=prewarm_landmark_cache
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/prewarm_landmark_cache_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/prewarm_landmark_cache_%j.out
 #SBATCH --nodes=4
 #SBATCH --ntasks=72
 #SBATCH --ntasks-per-node=18
@@ -27,7 +27,7 @@
 # 128G (512G total across the job), now shared by only 18 tasks/node instead
 # of 72, i.e. ~7.1GB/task, on 4 separate physical RAM pools rather than one.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=72
 

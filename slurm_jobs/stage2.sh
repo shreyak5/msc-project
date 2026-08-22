@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#SBATCH --job-name=stage2
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/stage2_%j.out
+#SBATCH --job-name=stage2_AB
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/stage2_AB_%j.out
 #SBATCH --nodes=4
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:4
-#SBATCH --time=03:00:00
+#SBATCH --time=07:00:00
 
 # Same topology as slurm_jobs/pretrain.sh: one srun task per NODE (not per
 # GPU) - srun (no --ntasks override below) inherits --ntasks=4/
@@ -21,12 +21,14 @@
 # AllocTRES had gres/gpu=16 but the srun step itself only got gres/gpu=1
 # without this flag.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
-CONFIG=training/config/stage2.yaml
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
+CONFIG=training/config/stage2_AB.yaml
 GPUS_PER_NODE=4
 MASTER_PORT=29500
 
 cd "$PROJECT_DIR"
+
+export WANDB_MODE=offline
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 

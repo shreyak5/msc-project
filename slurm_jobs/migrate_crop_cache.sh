@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=migrate_crop_cache
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/migrate_crop_cache_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/migrate_crop_cache_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks=64
 #SBATCH --ntasks-per-node=64
@@ -24,7 +24,7 @@
 # ever to run out of time - a bucket already migrated on a rerun simply
 # won't show up as work again (its old per-frame directory no longer exists).
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=64
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=migrate_landmark_cache
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/migrate_landmark_cache_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/migrate_landmark_cache_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks=64
 #SBATCH --ntasks-per-node=64
@@ -23,7 +23,7 @@
 # sampled bucket counts put it at roughly half of crop_cache's total files),
 # so the 2h ceiling has ample margin.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=64
 

@@ -1,12 +1,12 @@
 seed: 42
 image_size: 224
 crop_scale: 1.4
-crop_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/face_crop_cache
-mica_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/mica_shape_cache
+crop_cache_root: /lus/lfs1aip2/projects/u6ga/sk3925_datasets/face_crop_cache
+mica_cache_root: /lus/lfs1aip2/projects/u6ga/sk3925_datasets/mica_shape_cache
 mica_device: cuda
-landmark_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/landmark_cache
+landmark_cache_root: /lus/lfs1aip2/projects/u6ga/sk3925_datasets/landmark_cache
 fan_device: cuda
-face_parsing_cache_root: /lus/lfs1aip2/projects/u6kf/sk3925_datasets/face_parsing_cache
+face_parsing_cache_root: /lus/lfs1aip2/projects/u6ga/sk3925_datasets/face_parsing_cache
 # cpu, not cuda: XSeg runs on onnxruntime, and onnxruntime-gpu has no PyPI wheel
 # for this cluster's aarch64 (GH200 Grace) nodes - CPU-only until that changes.
 xseg_device: cpu

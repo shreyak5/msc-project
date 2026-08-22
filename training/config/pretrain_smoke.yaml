@@ -12,5 +12,5 @@ num_steps: 5
 log_interval_steps: 1
 checkpoint_interval_steps: 1000
 device: cuda
-checkpoint_dir: /projects/u6kf/sk3925_misc/checkpoints/pretrain_smoke_test
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/pretrain_smoke_test
 dataloader_config_path: dataset_processing/config/dataloader.yaml

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=stage2_smoke_test
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/stage2_smoke_test_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/stage2_smoke_test_%j.out
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=1
@@ -26,12 +26,14 @@
 # doesn't auto-propagate from the job's #SBATCH allocation down to an srun
 # step on this cluster).
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 CONFIG=training/config/stage2_smoke.yaml
 GPUS_PER_NODE=2
 MASTER_PORT=29500
 
 cd "$PROJECT_DIR"
+
+export WANDB_MODE=offline
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=prewarm_face_parsing_cache_tail3
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/prewarm_face_parsing_cache_tail3_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/prewarm_face_parsing_cache_tail3_%j.out
 #SBATCH --nodes=4
 #SBATCH --ntasks=576
 #SBATCH --ntasks-per-node=144
@@ -14,7 +14,7 @@
 # 4-node/576-task compute, bucket-safe concurrency across different
 # NUM_SHARDS values, per-dataset log filenames).
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=576
 

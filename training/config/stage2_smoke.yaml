@@ -21,8 +21,10 @@ num_steps: 6
 log_interval_steps: 1
 checkpoint_interval_steps: 1000
 device: cuda
-checkpoint_dir: /projects/u6kf/sk3925_misc/checkpoints/stage2_smoke_test
-stage1_checkpoint_pth: /projects/u6kf/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_smoke_test
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
 dataloader_config_path: dataset_processing/config/dataloader.yaml
 pass_pattern: [A, B, C]
-pass_b_alternation_period: 1
+pass_b_encoder_steps: 1
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0

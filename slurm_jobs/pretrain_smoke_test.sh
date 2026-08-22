@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=pretrain_smoke_test
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/pretrain_smoke_test_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/pretrain_smoke_test_%j.out
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=1
@@ -30,12 +30,14 @@
 # steps and exits in well under a minute once actually scheduled - nothing to
 # babysit.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 CONFIG=training/config/pretrain_smoke.yaml
 GPUS_PER_NODE=2
 MASTER_PORT=29500
 
 cd "$PROJECT_DIR"
+
+export WANDB_MODE=offline
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 

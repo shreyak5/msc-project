@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=prewarm_mica_cache
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/prewarm_mica_cache_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/prewarm_mica_cache_%j.out
 #SBATCH --nodes=4
 #SBATCH --ntasks=16
 #SBATCH --ntasks-per-node=4
@@ -9,7 +9,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=16
 

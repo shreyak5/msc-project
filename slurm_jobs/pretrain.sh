@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=pretrain
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/pretrain_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/pretrain_%j.out
 #SBATCH --nodes=4
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=1
@@ -28,12 +28,14 @@
 # Slurm's default per-task GRES round-robin; this job's one-task-per-node
 # topology does not.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 CONFIG=training/config/pretrain.yaml
 GPUS_PER_NODE=4
 MASTER_PORT=29500
 
 cd "$PROJECT_DIR"
+
+export WANDB_MODE=offline
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 

@@ -10,3 +10,10 @@ dataset_processing/manifests/
 pretrained_weights/
 CLAUDE.md
 uniface/
+wandb/
+core
+evaluation/output_dataset*/
+local_runs/
+scripts_tmp/
+temporal-smoothing-experiments/output/
+dataset_processing/occlusion_clip_index/

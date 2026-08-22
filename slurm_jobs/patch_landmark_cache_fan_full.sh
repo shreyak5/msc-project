@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=patch_landmark_cache_fan_full
-#SBATCH --output=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project/slurm_jobs/output/patch_landmark_cache_fan_full_%j.out
+#SBATCH --output=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project/slurm_jobs/output/patch_landmark_cache_fan_full_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --gres=gpu:1
@@ -15,7 +15,7 @@
 # multi-dataset train-split prewarm, so it doesn't need that job's 4-node/
 # 72-shard scale.
 
-PROJECT_DIR=/home/u6kf/sk3925.u6kf/sk3925-project/msc-project
+PROJECT_DIR=/home/u6ga/sk3925.u6ga/sk3925_project/msc-project
 DATALOADER_CONFIG=dataset_processing/config/dataloader.yaml
 NUM_SHARDS=8
 
