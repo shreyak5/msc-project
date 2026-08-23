@@ -6,7 +6,7 @@ from typing import Any, Literal
 import cv2
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 from dataset_processing.dataloading.config import DataloaderConfig
 from dataset_processing.dataloading.crop_cache import get_cropped_face
@@ -40,21 +40,6 @@ CATEGORIES_3D = {"3d_image", "3d_video"}
 # unconditionally regardless of 2D/3D, since TemporalTransformer needs them for
 # every video category's clips in Pass C - see build_category_dataset.
 CATEGORIES_2D = {"2d_image", "2d_video"}
-
-# CoMA/VOCASET are controlled studio 4D-scan captures - no genuine hand/object
-# occlusion ever occurs. Their raw visibility_ratio is dominated by RetinaFace/
-# XSeg domain mismatch (painted mocap markers + skull cap + extreme close-up
-# framing, none of which either model was trained on): XSeg's mask collapses
-# to ~0 on some frames despite a fully visible face and balloons past the
-# RetinaFace box on others, giving std ~0.28 vs ~0.06-0.10 on the natural-video
-# datasets (see output/visible_face_ratio/coma_vocaset_domain_mismatch/ for
-# example frames/masks). A fixed constant is not a workaround but the correct
-# value here: TemporalTransformer's bias only ever uses each frame's deviation
-# from its own local window mean (model/temporal.py's s_tilde, Sec 4.3) - a
-# constant score makes that deviation exactly zero for every frame, so TT
-# falls back to pure ALiBi distance-based attention for these two datasets,
-# matching the fact that there's no real occlusion signal to encode.
-VISIBILITY_RATIO_OVERRIDE = {"coma": 0.8, "vocaset": 0.8}
 
 
 def _crop_to_tensor(crop_bgr: np.ndarray) -> torch.Tensor:
@@ -354,8 +339,6 @@ class VideoFaceDataset(Dataset):
                 self._get_xseg,
                 self.crop_scale, self.image_size,
             )
-            if self.dataset_name in VISIBILITY_RATIO_OVERRIDE:
-                visibility_ratio = VISIBILITY_RATIO_OVERRIDE[self.dataset_name]
             if self.with_face_mask:
                 face_masks.append(torch.from_numpy(face_mask))
                 flags_face_mask_valid.append(flag_face_parsing_valid)
@@ -531,6 +514,7 @@ def build_category_dataset(
     cfg: DataloaderConfig,
     video_mode: Literal["frame_pool", "clip"] = "clip",
     with_landmarks_fan_full: bool = False,
+    occlusion_index: dict[str, set[int]] | None = None,
 ) -> Dataset:
     """video_mode only affects video categories (image categories are always
     single-frame already) - Sec 5.2: frame_pool (one re-sampled random frame per
@@ -542,7 +526,17 @@ def build_category_dataset(
     with_landmarks_fan_full: additive, opt-in full-68-point FAN landmarks for
     dev-set periodic eval (training/eval_loaders.py) - only ever threaded into
     VideoFaceDataset (clip mode); ImageFaceDataset/FramePoolVideoDataset callers
-    never need it, so it's silently ignored for those two paths."""
+    never need it, so it's silently ignored for those two paths.
+
+    occlusion_index: Stage2Config.pass_c_occlusion_subset_index_dir's parsed
+    contents for THIS one dataset (scripts/build_occlusion_index.py's output) -
+    {sample_id: {allowed start offsets}}. None (default) leaves the dataset
+    untouched, matching every other caller. When given, only meaningful for
+    the clip-mode VideoFaceDataset branch below - wraps the freshly-built
+    dataset in a torch.utils.data.Subset restricted to the index positions
+    whose (row.sample_id, start) is in the allow-set, same established
+    pattern training/eval_loaders.py already uses (Subset(dataset,
+    range(num_clips))) rather than changing VideoFaceDataset itself."""
     with_flame = entry.category in CATEGORIES_3D
     with_mica = entry.category in CATEGORIES_2D
     with_landmarks = entry.category in CATEGORIES_2D
@@ -577,7 +571,7 @@ def build_category_dataset(
             with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
         )
     category_cfg = cfg.categories[entry.category]
-    return VideoFaceDataset(
+    dataset = VideoFaceDataset(
         entry.name, entry.manifest_path, split, cfg.crop_cache_root,
         cfg.image_size, cfg.crop_scale, cfg.detector.device,
         cfg.detector.threshold, cfg.detector.model_name, with_flame=with_flame,
@@ -587,3 +581,10 @@ def build_category_dataset(
         with_face_mask=with_face_mask, face_parsing_cache_root=cfg.face_parsing_cache_root, xseg_device=cfg.xseg_device,
         with_landmarks_fan_full=with_landmarks_fan_full,
     )
+    if occlusion_index is not None:
+        allowed_positions = [
+            i for i, (row, start, _num_frames_total) in enumerate(dataset.index)
+            if start in occlusion_index.get(row.sample_id, ())
+        ]
+        return Subset(dataset, allowed_positions)
+    return dataset

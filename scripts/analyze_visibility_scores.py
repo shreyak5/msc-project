@@ -1,6 +1,10 @@
 """Analyze per-frame face-visibility scores from the prewarmed face-parsing
-cache for train-split videos from all 2d_video/3d_video datasets: csl_daily,
-how2sign, phoenix2014t, afew_va, mead, coma, vocaset.
+cache for train-split videos/frames from: csl_daily, how2sign, phoenix2014t,
+afew_va, mead (2d_video), plus coma, vocaset (3d_image as of the
+CoMA/VOCASET-as-image-dataset migration - this script is what originally
+surfaced their RetinaFace/XSeg domain-mismatch, which is why they're no longer
+run through TemporalTransformer's visibility-driven windowed attention; see
+dataset_processing/dataloading/datasets.py and the indexers' docstrings).
 
 Reads visibility_ratio directly from the cached XSeg output (see
 scripts/prewarm_face_parsing_cache.py) - no face detection/segmentation is

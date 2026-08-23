@@ -11,14 +11,17 @@ from torch.utils.data.distributed import DistributedSampler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_processing.dataloading import datasets as datasets_module  # noqa: E402
-from dataset_processing.dataloading.combined_loader import build_combined_loader  # noqa: E402
+from dataset_processing.dataloading.combined_loader import _load_occlusion_index, build_combined_loader  # noqa: E402
 from dataset_processing.dataloading.config import CategoryConfig, DataloaderConfig, DetectorConfig  # noqa: E402
 from dataset_processing.dataloading.datasets import (  # noqa: E402
     FramePoolVideoDataset,
     ImageFaceDataset,
     VideoFaceDataset,
+    build_category_dataset,
 )
 from dataset_processing.dataloading.identity_batch_sampler import IdentityAwareBatchSampler  # noqa: E402
+from dataset_processing.dataloading.registry import DatasetEntry  # noqa: E402
+from torch.utils.data import Subset  # noqa: E402
 
 
 class _NoFaceDetector:
@@ -350,6 +353,175 @@ def test_combined_loader_video_mode_controls_3d_video_identity_pairing(tmp_path,
 
     assert isinstance(loader_clip.category_samplers["3d_video"], DistributedSampler)
     assert isinstance(loader_frame_pool.category_samplers["3d_video"], IdentityAwareBatchSampler)
+
+
+def test_combined_loader_tolerates_a_category_with_zero_datasets(tmp_path, monkeypatch):
+    """The real production registry today (post CoMA/VOCASET -> 3d_image migration)
+    has zero datasets registered under 3d_video - build_combined_loader must skip
+    building a loader/sampler for such a category rather than crashing on an empty
+    ConcatDataset, and the resulting batches must simply omit that category's key
+    rather than including it as None/empty."""
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    def image_row(sample_id):
+        p = tmp_path / "img" / f"{sample_id}.jpg"
+        _write_dummy_image(p)
+        return _base_row(dataset="img_a", sample_id=sample_id, image_paths=[str(p)])
+
+    img_manifest = tmp_path / "manifests" / "img_a.jsonl"
+    _write_manifest(img_manifest, [image_row(f"s{i}") for i in range(4)])
+
+    mesh_p = tmp_path / "mesh" / "mesh0.json"
+    _write_dummy_flame_json(mesh_p)
+    img3d_p = tmp_path / "mesh" / "img0.jpg"
+    _write_dummy_image(img3d_p)
+    mesh_manifest = tmp_path / "manifests" / "mesh_a.jsonl"
+    _write_manifest(mesh_manifest, [_base_row(
+        dataset="mesh_a", sample_id="s0", dimensionality="3d",
+        image_paths=[str(img3d_p)], flame_mesh_paths=[str(mesh_p)],
+    )])
+
+    # No 2d_video, no 3d_video entry at all - matching real datasets.yaml today.
+    registry = {
+        "datasets": {
+            "img_a": {"manifest": str(img_manifest), "dimensionality": "2d", "modality": "image", "category": "2d_image", "status": "done"},
+            "mesh_a": {"manifest": str(mesh_manifest), "dimensionality": "3d", "modality": "image", "category": "3d_image", "status": "done"},
+        }
+    }
+    registry_path = tmp_path / "datasets.yaml"
+    with open(registry_path, "w") as f:
+        yaml.safe_dump(registry, f)
+
+    cfg = _synthetic_dataloader_config(tmp_path)
+    loader = build_combined_loader(cfg, split="train", rank=0, world_size=1, datasets_yaml_path=registry_path)
+
+    assert "2d_video" not in loader.category_loaders
+    assert "3d_video" not in loader.category_loaders
+    assert "2d_video" not in loader.category_samplers
+    assert "3d_video" not in loader.category_samplers
+
+    batch = next(iter(loader))
+    assert set(batch.keys()) == {"2d_image", "3d_image"}
+
+
+def test_build_category_dataset_occlusion_index_none_leaves_dataset_unfiltered(tmp_path, monkeypatch):
+    frame_paths = []
+    for i in range(40):
+        p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(p)
+        frame_paths.append(str(p))
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [_base_row(sample_id="clip0", modality="video", image_paths=frame_paths)])
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    cfg = _synthetic_dataloader_config(tmp_path)
+    entry = DatasetEntry(
+        name="vid_a", manifest_path=manifest_path, dimensionality="2d", modality="video", category="2d_video",
+    )
+
+    dataset = build_category_dataset(entry, "train", cfg, video_mode="clip")
+    # 2d_video's max_frames=10 (_synthetic_dataloader_config) -> ceil(40/10) = 4 segments.
+    assert isinstance(dataset, VideoFaceDataset)
+    assert len(dataset) == 4
+
+
+def test_build_category_dataset_occlusion_index_restricts_to_matching_segments(tmp_path, monkeypatch):
+    frame_paths = []
+    for i in range(40):
+        p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(p)
+        frame_paths.append(str(p))
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [
+        _base_row(sample_id="clip0", modality="video", image_paths=frame_paths),
+        _base_row(sample_id="clip1", modality="video", image_paths=frame_paths),
+    ])
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    cfg = _synthetic_dataloader_config(tmp_path)
+    entry = DatasetEntry(
+        name="vid_a", manifest_path=manifest_path, dimensionality="2d", modality="video", category="2d_video",
+    )
+
+    # max_frames=10 -> starts 0,10,20,30 per video. Only allow clip0's start=10
+    # and clip1's start=30 - confirms filtering is keyed by (sample_id, start)
+    # together, not just start alone (which would be ambiguous across videos).
+    occlusion_index = {"clip0": {10}, "clip1": {30}}
+    dataset = build_category_dataset(entry, "train", cfg, video_mode="clip", occlusion_index=occlusion_index)
+
+    assert isinstance(dataset, Subset)
+    assert len(dataset) == 2
+    kept = {(dataset.dataset.index[i][0].sample_id, dataset.dataset.index[i][1]) for i in dataset.indices}
+    assert kept == {("clip0", 10), ("clip1", 30)}
+
+
+def test_build_category_dataset_occlusion_index_missing_sample_id_yields_no_segments(tmp_path, monkeypatch):
+    # A sample_id with no entry in occlusion_index at all must contribute zero
+    # segments, not raise or silently keep everything.
+    frame_paths = []
+    for i in range(15):
+        p = tmp_path / "source" / f"frame_{i:03d}.jpg"
+        _write_dummy_image(p)
+        frame_paths.append(str(p))
+    manifest_path = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest_path, [_base_row(sample_id="clip0", modality="video", image_paths=frame_paths)])
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+
+    cfg = _synthetic_dataloader_config(tmp_path)
+    entry = DatasetEntry(
+        name="vid_a", manifest_path=manifest_path, dimensionality="2d", modality="video", category="2d_video",
+    )
+
+    dataset = build_category_dataset(
+        entry, "train", cfg, video_mode="clip", occlusion_index={"some_other_clip": {0}},
+    )
+    assert isinstance(dataset, Subset)
+    assert len(dataset) == 0
+
+
+def test_load_occlusion_index_none_dir_returns_none(tmp_path):
+    assert _load_occlusion_index(None, "any_dataset") is None
+
+
+def test_load_occlusion_index_missing_file_returns_none(tmp_path):
+    assert _load_occlusion_index(tmp_path, "no_such_dataset") is None
+
+
+def test_load_occlusion_index_parses_jsonl(tmp_path):
+    index_path = tmp_path / "vid_a.jsonl"
+    with open(index_path, "w") as f:
+        f.write(json.dumps({"sample_id": "clip0", "start": 0}) + "\n")
+        f.write(json.dumps({"sample_id": "clip0", "start": 20}) + "\n")
+        f.write(json.dumps({"sample_id": "clip1", "start": 10}) + "\n")
+
+    index = _load_occlusion_index(tmp_path, "vid_a")
+    assert index == {"clip0": {0, 20}, "clip1": {10}}
+
+
+def test_build_combined_loader_occlusion_index_dir_restricts_2d_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(datasets_module, "get_detector", lambda *a, **k: _NoFaceDetector())
+    registry_path = _build_synthetic_registry(tmp_path)
+    cfg = _synthetic_dataloader_config(tmp_path)
+
+    # vid_a's clip0 has 10 frames, max_frames=10 -> exactly one segment (start=0).
+    # Restricting to a DIFFERENT start (which doesn't exist for this video)
+    # should leave zero segments for vid_a, without touching any other category.
+    index_dir = tmp_path / "occlusion_index"
+    index_dir.mkdir()
+    with open(index_dir / "vid_a.jsonl", "w") as f:
+        f.write(json.dumps({"sample_id": "clip0", "start": 999}) + "\n")
+
+    loader_unfiltered = build_combined_loader(cfg, split="train", rank=0, world_size=1, datasets_yaml_path=registry_path)
+    loader_filtered = build_combined_loader(
+        cfg, split="train", rank=0, world_size=1, datasets_yaml_path=registry_path, occlusion_index_dir=index_dir,
+    )
+
+    # img_a (2d_image) is untouched by occlusion_index_dir either way.
+    assert len(loader_unfiltered.category_loaders["2d_image"].dataset) == len(
+        loader_filtered.category_loaders["2d_image"].dataset
+    )
+    assert len(loader_unfiltered.category_loaders["2d_video"].dataset) == 1
+    assert len(loader_filtered.category_loaders["2d_video"].dataset) == 0
 
 
 def test_frame_pool_dataset_one_entry_per_video_not_per_frame(tmp_path, monkeypatch):

@@ -1,3 +1,7 @@
+# occlusion-experiment1.md's Pass-C-only experiment: exact copy of datasets.yaml
+# with the afew_va and mead entries removed (both category 2d_video, alongside
+# csl_daily/phoenix2014t/how2sign which stay) - MEAD/AFEW-VA are excluded from
+# this experiment's Pass C batches, sign-language video only.
 datasets:
   celeba:
     manifest: dataset_processing/manifests/celeba.jsonl
@@ -18,20 +22,6 @@ datasets:
     dimensionality: 2d
     modality: image
     category: 2d_image
-    status: done
-
-  afew_va:
-    manifest: dataset_processing/manifests/afew_va.jsonl
-    dimensionality: 2d
-    modality: video
-    category: 2d_video
-    status: done
-
-  mead:
-    manifest: dataset_processing/manifests/mead.jsonl
-    dimensionality: 2d
-    modality: video
-    category: 2d_video
     status: done
 
   dad_3dheads:

@@ -9,9 +9,16 @@ Camera 26_C is used exclusively, per project decision.
 
 Verified across all 480 subject/sentence combinations that every mesh frame
 has a matching 26_C image at the same index (0 mismatches out of 123710 mesh
-frames), same as CoMA. Each row bundles a whole sentence via image_paths/
-flame_mesh_paths lists (ordered, index-aligned), since VOCASET is a video
-dataset (per project decision) even though frames ship as discrete files.
+frames), same as CoMA.
+
+Indexed as an IMAGE dataset (one row per frame), not bundled into per-sentence
+video rows, for the same reason as CoMA (see index_coma.py's docstring): VOCASET
+is the same kind of controlled studio 4D-scan capture (painted mocap markers,
+skull cap, extreme close-up framing), which the RetinaFace/XSeg face-visibility
+pipeline is domain-mismatched on - so treating it as ordinary video would feed
+TemporalTransformer's visibility-driven windowed attention an unreliable signal.
+Every frame becomes an independent 3D-image sample instead (same layout as
+FaMoS); full FLAME mesh supervision is unaffected.
 """
 
 from __future__ import annotations
@@ -42,7 +49,6 @@ def build_rows():
             sentence = sent_dir.name
             img_sent_dir = img_subject_dir / sentence
 
-            mesh_paths, image_paths = [], []
             for mesh_path in sorted(sent_dir.glob(f"{sentence}.*.ply")):
                 m = re.match(rf"^{re.escape(sentence)}\.(\d+)\.ply$", mesh_path.name)
                 if not m:
@@ -52,24 +58,20 @@ def build_rows():
                 if not image_path.exists():
                     missing_images += 1
                     continue
-                mesh_paths.append(str(mesh_path))
-                image_paths.append(str(image_path))
 
-            if not image_paths:
-                continue
-
-            yield ManifestRow(
-                dataset="vocaset",
-                sample_id=f"{subject}_{sentence}",
-                subject_id=subject,
-                dimensionality="3d",
-                modality="video",
-                image_paths=image_paths,
-                flame_mesh_paths=mesh_paths,
-                sequence_id=sentence,
-                camera_id=CAMERA,
-                labels={"sentence": sentence},
-            )
+                yield ManifestRow(
+                    dataset="vocaset",
+                    sample_id=f"{subject}_{sentence}_{frame_idx_str}",
+                    subject_id=subject,
+                    dimensionality="3d",
+                    modality="image",
+                    image_paths=[str(image_path)],
+                    flame_mesh_paths=[str(mesh_path)],
+                    frame_index=int(frame_idx_str),
+                    sequence_id=sentence,
+                    camera_id=CAMERA,
+                    labels={"sentence": sentence},
+                )
 
     if missing_images:
         print(f"vocaset: warning -- {missing_images} mesh frames had no matching {CAMERA} image, skipped")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
@@ -16,6 +18,28 @@ from dataset_processing.dataloading.registry import (
 )
 
 CATEGORIES = ("2d_image", "2d_video", "3d_image", "3d_video")
+
+
+def _load_occlusion_index(
+    occlusion_index_dir: str | Path | None, dataset_name: str,
+) -> dict[str, set[int]] | None:
+    """Reads scripts/build_occlusion_index.py's <occlusion_index_dir>/<dataset_name>.jsonl
+    into build_category_dataset's expected {sample_id: {allowed starts}} shape.
+    None if occlusion_index_dir itself is None, OR if this particular dataset
+    has no index file (e.g. it wasn't included when the index was built) -
+    either way, that dataset's VideoFaceDataset is left completely unfiltered,
+    never an empty/all-excluded Subset."""
+    if occlusion_index_dir is None:
+        return None
+    path = Path(occlusion_index_dir) / f"{dataset_name}.jsonl"
+    if not path.exists():
+        return None
+    index: dict[str, set[int]] = defaultdict(set)
+    with path.open() as f:
+        for line in f:
+            entry = json.loads(line)
+            index[entry["sample_id"]].add(entry["start"])
+    return dict(index)
 
 
 def zip_max_size_cycle(loaders: dict[str, DataLoader]) -> Iterator[dict[str, Any]]:
@@ -60,19 +84,42 @@ def build_combined_loader(
     world_size: int,
     datasets_yaml_path: str | Path = DEFAULT_DATASETS_YAML,
     video_mode: Literal["frame_pool", "clip"] = "clip",
+    occlusion_index_dir: str | Path | None = None,
 ) -> CombinedFaceLoader:
     """video_mode: see build_category_dataset's docstring - applies to every video
     category in this loader uniformly (Sec 5.2's single global per-pass switch),
-    not chosen independently per category."""
+    not chosen independently per category.
+
+    occlusion_index_dir: Stage2Config.pass_c_occlusion_subset_index_dir -
+    directory of scripts/build_occlusion_index.py's per-dataset JSONL index
+    files. None (default) leaves every dataset's own build_category_dataset
+    call unfiltered, exactly as before this parameter existed. When given,
+    each registry entry's own <occlusion_index_dir>/<entry.name>.jsonl (if it
+    exists) restricts that one dataset's clip-mode VideoFaceDataset to only
+    occlusion-positive segments - see _load_occlusion_index/
+    build_category_dataset's own docstrings."""
     entries = load_datasets_yaml(datasets_yaml_path)
     by_category = datasets_by_category(entries)
 
     category_loaders: dict[str, DataLoader] = {}
     category_samplers: dict[str, DistributedSampler | IdentityAwareBatchSampler] = {}
     for category in CATEGORIES:
+        entries_for_category = by_category.get(category, [])
+        if not entries_for_category:
+            # No datasets currently registered in this category (e.g. 3d_video,
+            # since CoMA/VOCASET moved to 3d_image) - skip it entirely rather than
+            # building an empty ConcatDataset. CombinedFaceLoader/zip_max_size_cycle
+            # only ever iterate category_loaders/category_samplers via .values()/
+            # .items(), so a category simply being absent from these dicts needs no
+            # further handling downstream.
+            continue
         category_cfg = cfg.categories[category]
         category_datasets = [
-            build_category_dataset(entry, split, cfg, video_mode=video_mode) for entry in by_category[category]
+            build_category_dataset(
+                entry, split, cfg, video_mode=video_mode,
+                occlusion_index=_load_occlusion_index(occlusion_index_dir, entry.name),
+            )
+            for entry in entries_for_category
         ]
         dataset = category_datasets[0] if len(category_datasets) == 1 else ConcatDataset(category_datasets)
 

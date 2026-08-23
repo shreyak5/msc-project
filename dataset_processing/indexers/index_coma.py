@@ -10,11 +10,18 @@ Mesh and image capture rates differ (images were captured at a higher rate
 than meshes were registered), so pairing is done by exact frame-index string
 match rather than position. Verified across all 144 subject/expression
 combinations that every mesh frame has a matching 26_C image at the same
-index (0 mismatches out of 20465 mesh frames) -- this full temporal
-continuity means CoMA is really a continuous per-expression video capture,
-so each row bundles a whole expression sequence via image_paths/
-flame_mesh_paths lists (ordered, index-aligned) rather than one row per
-frame. Extra trailing image frames with no corresponding mesh are excluded.
+index (0 mismatches out of 20465 mesh frames).
+
+Indexed as an IMAGE dataset (one row per frame), not bundled into per-expression
+video rows despite the underlying capture being temporally continuous: CoMA is a
+controlled studio 4D-scan capture (painted mocap markers, skull cap, extreme
+close-up framing) that the RetinaFace/XSeg face-visibility pipeline
+(dataset_processing/dataloading/face_parsing_cache.py) is domain-mismatched on, so
+feeding it through TemporalTransformer's visibility-driven windowed attention as
+ordinary video would train on an unreliable signal. Treating every frame as an
+independent 3D-image sample (same layout as FaMoS) sidesteps that entirely - full
+FLAME mesh supervision is unaffected, only the temporal/video framing is dropped.
+Extra trailing image frames with no corresponding mesh are excluded.
 """
 
 from __future__ import annotations
@@ -45,7 +52,6 @@ def build_rows():
             expr = expr_dir.name
             img_expr_dir = img_subject_dir / expr
 
-            mesh_paths, image_paths = [], []
             for mesh_path in sorted(expr_dir.glob(f"{expr}.*.ply")):
                 m = re.match(rf"^{re.escape(expr)}\.(\d+)\.ply$", mesh_path.name)
                 if not m:
@@ -55,24 +61,20 @@ def build_rows():
                 if not image_path.exists():
                     missing_images += 1
                     continue
-                mesh_paths.append(str(mesh_path))
-                image_paths.append(str(image_path))
 
-            if not image_paths:
-                continue
-
-            yield ManifestRow(
-                dataset="coma",
-                sample_id=f"{subject}_{expr}",
-                subject_id=subject,
-                dimensionality="3d",
-                modality="video",
-                image_paths=image_paths,
-                flame_mesh_paths=mesh_paths,
-                sequence_id=expr,
-                camera_id=CAMERA,
-                labels={"expression": expr},
-            )
+                yield ManifestRow(
+                    dataset="coma",
+                    sample_id=f"{subject}_{expr}_{frame_idx_str}",
+                    subject_id=subject,
+                    dimensionality="3d",
+                    modality="image",
+                    image_paths=[str(image_path)],
+                    flame_mesh_paths=[str(mesh_path)],
+                    frame_index=int(frame_idx_str),
+                    sequence_id=expr,
+                    camera_id=CAMERA,
+                    labels={"expression": expr},
+                )
 
     if missing_images:
         print(f"coma: warning -- {missing_images} mesh frames had no matching {CAMERA} image, skipped")
