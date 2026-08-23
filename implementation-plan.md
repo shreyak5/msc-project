@@ -76,28 +76,61 @@ Five trainable component groups.
 ### 4.2 Window
 - Attention restricted to a **centred** window of **w = 15** frames (config parameter): query frame i attends only to frames `[i - w//2, i + w//2]`.
 - Rationale recorded: smoothness needs ~3 adjacent frames; occlusion infill needs longer reach. w was raised from an initial 11 to 15 to give more reach for the occlusion-span risk below.
-- Implemented as true local (sliding-window) attention (`model/temporal.py`), not a mask on top of dense attention - a mask alone would still cost O(N²) regardless of w (`nn.MultiheadAttention` always computes the full QK^T; masking only changes what survives softmax). True local attention costs O(N·w), linear in however many frames N it's called with. This matters for two reasons:
+- Implemented as true local (sliding-window) attention (`model/temporal.py`), not a mask on top of dense attention - a mask alone would still cost O(N²) regardless of w (a full dense QK^T over every frame, masked afterward, doesn't change that cost). True local attention costs O(N·w), linear in however many frames N it's called with. This matters for two reasons:
   1. **Avoid compute blow-up on long videos at inference.** A full-length inference video can be run through TT in one pass without cost exploding.
   2. **Avoid boundary artifacts from chunking long videos.** Because cost no longer depends on N, inference never needs to chop a long video into fixed-size clips for compute reasons - eliminating the artificial "seam" every clip-length frames where a frame would otherwise lose access to real neighbors purely because of where a chunk boundary fell. Boundary effects now only occur at the true start/end of the video (unavoidable - there simply aren't w//2 neighbors there), not at arbitrary chunk seams.
 - Training clip length (`max_frames` in `dataset_processing/config/dataloader.yaml`) remains a separate, larger batching decision, unrelated to w now that attention cost no longer depends on clip length.
 - ⚠ Open risk: signing occlusions can exceed w frames. Before finalizing, measure the occlusion-span distribution on the sign language datasets using the visibility score, and increase w further if a large fraction of occlusion spans lack clean frames within the window. Keep w a config knob.
 
-### 4.3 Score normalization
-- Within each window, subtract the window mean from each frame's score → normalized relative scores. (Mean subtraction only — do **not** z-score/divide by std: unit-variance rescaling would amplify negligible score noise in near-uniform windows into large attention biases. Mean subtraction preserves variation magnitude, so only genuinely low-visibility frames receive a strong bias.)
+### 4.3 Head split: visibility vs. distance (superseded score-normalization note)
+Visibility and distance are **not** combined into one shared per-head bias (an
+earlier version of this section had them mixed via mean-subtracted-score + ALiBi
+in a single additive term across all heads — superseded by the split below, which
+avoids one signal having to compete with another inside the same softmax). Of TT's
+`num_heads` (8), **1 head is a dedicated visibility-only head**; the remaining
+**7 heads are ordinary QK+ALiBi heads** with a distance-only bias (Sec 4.4). Score
+normalization (window-mean subtraction) is no longer used anywhere in TT: the
+visibility-only head's attention weights are driven by each key frame's **raw**
+visibility score directly (not a deviation from a window mean), since it no longer
+needs to compete against a distance term the way the old combined bias did.
 
-### 4.4 Attention bias (ALiBi-style)
-For query frame i, key frame j, head h, add to the pre-softmax QK logits:
+### 4.4 Attention (QK+ALiBi heads and the visibility-only head)
+
+**QK+ALiBi heads (7 of 8):** ordinary content-based QK^T attention, plus a
+distance-only ALiBi bias added to the pre-softmax logits:
 
 ```
-bias(i, j, h) = m_h * s̃_j − n_h * |i − j|
+bias(i, j, h) = −n_h * |i − j|
 ```
 
-- `s̃_j` = normalized visibility score of the **key** frame (attend more to reliable frames).
 - `|i − j|` = temporal distance, penalized (ALiBi-style, negative slope).
-- `m_h`, `n_h`: **fixed** per-head constants (not learned). Heads span a genuine **grid** of (m, n) combinations rather than a single m = k·n line: 4 m-values × 2 n-values = 8 heads (one (m, n) pair per head, all combinations covered). Both are geometric series:
-  - `m ∈ {6.25, 12.5, 25, 50}` — spans up to ~50 so that an extreme score deviation (s̃ ≈ 0.1) can dominate over a typical distance penalty even at the grid's low end (with mean-subtracted scores in roughly [−0.1, 0.1] and distances in [−5, 5]).
-  - `n ∈ {0.5, 0.25}` — ALiBi's own first two slopes from its standard 8-head geometric sequence (2⁻¹, 2⁻²; see Press et al., "Train Short, Test Long").
-- All 4 component tokens of frame j receive the same frame-level score; attention is full joint attention over all 4 tokens × w frames within the window (component tokens carry component-type embeddings so the TT can distinguish them; temporal order is conveyed solely via the distance bias).
+- `n_h`: **fixed**, non-learned per-head slope, following Press et al.'s standard
+  ALiBi geometric-sequence formula (`n_h = 2^(-8h/K)` for `h = 1..K`, `K` = number
+  of QK+ALiBi heads = 7) — "Train Short, Test Long".
+
+**Visibility-only head (1 of 8):** attention weights come **only** from each key
+frame's raw visibility score — no QK content term, no distance term at all:
+
+```
+weight(i, j) = softmax_j(visibility_j / T)
+```
+
+- `visibility_j` = the **key** frame's raw (un-normalized) face-visibility score
+  (Sec 4.1) — attend more to reliable frames, in proportion to how visible they are.
+- `T` = `visibility_temperature`, a **fixed** (non-learned), configurable scalar
+  (`TTConfig.visibility_temperature`, default **0.1** — deliberately sharpened from
+  an unscaled 1.0 so visibility differences dominate the head's attention pattern
+  more strongly). `T < 1` sharpens the distribution toward the single most-visible
+  frame in the window; `T > 1` flattens it toward uniform.
+- The attention *weights* are a fixed, non-learned function of visibility; the
+  *value* this head aggregates is still a normal learned V projection, same as
+  every other head — only the weighting is hardcoded.
+
+Both mechanisms: all 4 component tokens of frame j receive the same frame-level
+score/bias; attention is full joint attention over all 4 tokens × w frames within
+the window (component tokens carry component-type embeddings so the TT can
+distinguish them; temporal order is conveyed solely via the QK+ALiBi heads' distance
+bias — the visibility-only head carries no distance signal at all).
 
 ---
 
@@ -109,11 +142,19 @@ bias(i, j, h) = m_h * s̃_j − n_h * |i − j|
 |---|---|---|
 | 2D image | CelebA, FFHQ, BUPT-Balancedface, NoW-excluded misc | self-supervised (SMIRK) |
 | 2D video | MEAD, AFEW-VA | self-supervised + temporal |
-| 3D image (image + registered mesh pairs) | LYHM, DAD-3DHeads, NoW **excluded from training** | direct vertex supervision |
-| 3D video (4D sequences) | FaMoS, CoMA, VOCASET | vertex supervision + temporal |
+| 3D image (image + registered mesh pairs) | LYHM, DAD-3DHeads, FaMoS, CoMA, VOCASET, NoW **excluded from training** | direct vertex supervision |
+| 3D video (4D sequences) | *(none currently — category kept for a hypothetical future video-3D dataset)* | vertex supervision + temporal |
 | 2D sign language video | How2Sign, CSL-Daily, PHOENIX-2014T | self-supervised + temporal |
 
 - **NoW is never trained on** (reserved benchmark).
+- **CoMA/VOCASET are indexed per-frame, not per-sequence** (one manifest row per
+  frame, same layout as FaMoS), and are never run through TT/windowed
+  visibility-biased attention: their controlled studio 4D-scan capture setup
+  (painted mocap markers, skull caps, extreme close-ups) causes the RetinaFace/XSeg
+  visibility-score pipeline (Sec 4.1) to be domain-mismatched and unreliable, so
+  treating them as ordinary temporal/video data would feed TT's visibility-driven
+  attention a noisy signal. They still contribute full FLAME mesh supervision, just
+  as independent per-frame samples rather than temporal clips.
 - Sign language datasets use their **official train/dev/test splits**; all other datasets are train-only. (Already prepared by the user.)
 - Identity labels available (for identity-swap losses): FaMoS, Headspace, CoMA, VOCASET, BUPT-Balancedface, MEAD, AFEW-VA, CSL-Daily, PHOENIX-2014T, How2Sign.
 - 3D datasets are stored as (2D image, FLAME-registered 3D mesh) pairs. All listed 3D datasets are already in FLAME topology — no registration/conversion work required.
