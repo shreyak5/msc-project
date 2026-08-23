@@ -13,6 +13,25 @@ def per_frame_euclidean_error(pred_xy, gt_xy):
     return float(np.linalg.norm(pred_xy - gt_xy, axis=-1).mean())
 
 
+def per_frame_euclidean_error_masked(pred_xy, gt_xy, visible_mask):
+    """Same as per_frame_euclidean_error, but restricted to points where
+    visible_mask (N,) bool is True. Returns np.nan if either side is missing,
+    if visible_mask is None, or if visible_mask has zero True entries (no
+    visible landmarks this frame) - NaN, not 0, consistent with this file's
+    "NaN = missing/invalid data" convention (summarize() already excludes NaN
+    frames). Unlike training's masked-mean loss, this is a reporting metric,
+    not a differentiable objective, so there's no need to clamp a zero
+    denominator to avoid a NaN gradient.
+    """
+    if pred_xy is None or gt_xy is None or visible_mask is None:
+        return np.nan
+    if np.isnan(pred_xy).any() or np.isnan(gt_xy).any():
+        return np.nan
+    if not np.any(visible_mask):
+        return np.nan
+    return float(np.linalg.norm(pred_xy[visible_mask] - gt_xy[visible_mask], axis=-1).mean())
+
+
 def per_frame_vertex_error(vertices_t, vertices_t1):
     """Mean Euclidean distance between two consecutive frames' 3D mesh vertices.
 

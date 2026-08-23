@@ -16,6 +16,15 @@ class ReconstructionMethod(ABC):
     hands the same crop to the reference (FAN/MediaPipe) detectors and to the method.
     """
 
+    # None = score landmarks at whatever crop_size the method was set up with (default).
+    # A method overrides this to a fixed pixel size when its own crop_size is dictated by
+    # its own pipeline's requirements rather than being a fair scoring resolution (see
+    # Pixel3dmmMethod, whose 512px tracking crop would otherwise inflate its raw-pixel
+    # landmark error relative to every other method's 224px crop) - eval_core.py's
+    # evaluate_clip() downscales the crop and rescales predicted landmarks to this size
+    # before computing error against it.
+    gt_crop_size = None
+
     @abstractmethod
     def setup(self, device, **method_params):
         """Load models/checkpoints. Called once before any predict_* calls."""

@@ -70,7 +70,8 @@ class SmirkMethod(ReconstructionMethod):
         fan_pixels = fan_pixels.cpu().numpy()
         mp_pixels = mp_pixels.cpu().numpy()
         vertices = flame_output['vertices'].cpu().numpy()
+        cam = outputs['cam'].cpu().numpy()
         return [
-            {'fan': fan_pixels[i], 'mediapipe': mp_pixels[i], 'vertices': vertices[i]}
+            {'fan': fan_pixels[i], 'mediapipe': mp_pixels[i], 'vertices': vertices[i], 'cam': cam[i]}
             for i in range(len(cropped_bgr_frames))
         ]
