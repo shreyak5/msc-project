@@ -1,0 +1,20 @@
+# checkpoint_dir now a _v4 suffix: re-run under the reweighted loss recipe -
+# see stage2_AB.yaml's own comments for the full reasoning, including why this
+# lineage's numbering starts at _v3 (identical here except pass_b_encoder_
+# steps=100, a 100:1 encoder:unet ratio instead of 50:1).
+seed: 42
+learning_rate: 0.00001
+num_steps: 100000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_AAB_UNet100_v4
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+pass_pattern: [A, A, B]
+pass_b_encoder_steps: 100
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_AAB_UNet100_v4/step_00026999.pt
+resume_optimizer_and_step: true

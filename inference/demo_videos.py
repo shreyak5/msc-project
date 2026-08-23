@@ -7,6 +7,10 @@ O(N*w) local-attention TemporalTransformer (model/temporal.py) was built
 precisely to support this, so no artificial clip-chunking is needed here. No
 trained checkpoint is required to run.
 
+--render_no_tt additionally renders the SViT -> ComponentHeads path directly
+(model.encoding.encode_image, no TT refinement) as an extra mesh panel, for
+visually comparing TT's effect on the same clip.
+
 Usage:
     python inference/demo_videos.py --input_path <video.mp4> [--checkpoint <path>]
     python inference/demo_videos.py --input_path <frame_dir> --image_seq
@@ -25,7 +29,8 @@ import torch
 from skimage.transform import warp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model.encoding import encode_video  # noqa: E402
+from model import constants  # noqa: E402
+from model.encoding import encode_image, encode_video  # noqa: E402
 from model.flame.masking import load_probabilities_per_flame_triangle  # noqa: E402
 from preprocessing.io import load_frames  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
@@ -34,6 +39,7 @@ from utils.inference_utils import (  # noqa: E402
     load_available_checkpoint,
     make_crop_parse_pool,
     make_panel,
+    peek_num_expression_params,
     render_2d_reconstruction,
     run_flame,
     run_parallel_crop_and_parse,
@@ -46,6 +52,10 @@ DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # for a long video) - unrelated to and not to be confused with TT's own windowing,
 # which already sees the whole clip in one encode_video call below.
 RENDER_CHUNK_SIZE = 32
+# --render_no_tt diff summary: params TT actually refines per frame (shape/
+# rotation/scale/translation are per-clip-ish or camera-only and less
+# informative about TT's own effect).
+DIFF_PARAM_NAMES = ("expression", "jaw", "eyelid")
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,11 +67,42 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint", type=str, default=None,
         help="Optional trained checkpoint; omit to sanity-test the untrained model.",
     )
+    parser.add_argument(
+        "--tt_variant", type=str, default="original", choices=["original", "simple", "gated"],
+        help="TemporalTransformer architecture --checkpoint was trained with (training/config.py's "
+        "Stage2Config.tt_variant) - must match, since the variants have different parameter shapes "
+        "for the 'tt' checkpoint key.",
+    )
+    parser.add_argument(
+        "--tt_gamma", type=float, default=constants.TT_GATE_GAMMA,
+        help="Visibility-gate sharpness, only used when --tt_variant gated; must match the "
+        "checkpoint's training-time tt_gamma (not recoverable from the checkpoint itself).",
+    )
+    parser.add_argument(
+        "--no_tt", action="store_true",
+        help="Force-skip TT and render the SViT -> ComponentHeads path directly, "
+        "even if --checkpoint has matching TT weights (same effect as an "
+        "architecture-mismatched tt checkpoint, but user-triggered).",
+    )
+    parser.add_argument(
+        "--pool_identity", action="store_true",
+        help="Apply identity pooling (model/encoding.py's _pool_identity) to the decoded shape - "
+        "use this when --checkpoint was trained with Stage2Config.pass_c_identity_pooling=true, "
+        "so the rendered mesh reflects the same per-clip-pooled identity training actually "
+        "optimized, rather than raw (never independently supervised) per-frame shape values. "
+        "Default off reproduces the original per-frame shape behavior exactly.",
+    )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--xseg_device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--out_path", type=str, default="inference/output/demo")
     parser.add_argument("--render_mesh", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--render_2d_recon", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--render_no_tt", action=argparse.BooleanOptionalAction, default=False,
+        help="Also render the mesh from the SViT -> ComponentHeads path directly (no TT), "
+        "as an extra panel alongside the regular SViT -> TT -> ComponentHeads mesh. "
+        "Requires --render_mesh.",
+    )
     parser.add_argument(
         "--render_orig", action=argparse.BooleanOptionalAction, default=False,
         help="Warp renders back into the original frame's position/size instead of showing "
@@ -92,10 +133,19 @@ def _warp_to_orig(rendered: torch.Tensor, tform, video_height: int, video_width:
     return warp(rendered_np, tform, output_shape=(video_height, video_width), preserve_range=True).astype(np.uint8)
 
 
+@torch.no_grad()
 def main() -> None:
+    # Inference only - no backward() call anywhere in this script. Without
+    # this, every forward pass (encode_video/encode_image/FLAME/renderer)
+    # retains its full autograd graph (activations for every frame), which is
+    # what was actually pinning ~95GB on long clips - chunking the SViT
+    # forward pass alone doesn't help if the resulting graph is kept alive
+    # afterward anyway.
     args = parse_args()
     if not args.render_mesh and not args.render_2d_recon:
         raise ValueError("At least one of --render_mesh / --render_2d_recon must be enabled")
+    if args.render_no_tt and not args.render_mesh:
+        raise ValueError("--render_no_tt requires --render_mesh")
 
     args.out_path = timestamped_out_dir(args.out_path)
 
@@ -108,9 +158,17 @@ def main() -> None:
         print(f"[demo] {msg} (+{now - last_time:.1f}s, total {now - start_time:.1f}s)")
         last_time = now
 
-    models = build_models(args.device, use_unet=args.render_2d_recon)
+    models = build_models(
+        args.device, use_unet=args.render_2d_recon, tt_variant=args.tt_variant, tt_gamma=args.tt_gamma,
+        num_expression_params=peek_num_expression_params(args.checkpoint),
+    )
     log(f"models built on {args.device}")
-    step = load_available_checkpoint(models, args.checkpoint, args.device)
+    mismatched_modules: set[str] = set()
+    step = load_available_checkpoint(models, args.checkpoint, args.device, mismatched_out=mismatched_modules)
+    skip_tt = args.no_tt or "tt" in mismatched_modules
+    if skip_tt:
+        reason = "--no_tt set" if args.no_tt else "tt weights mismatched checkpoint architecture"
+        print(f"[demo] skipping TT ({reason})")
     face_probabilities = (
         load_probabilities_per_flame_triangle().to(args.device) if args.render_2d_recon else None
     )
@@ -178,6 +236,9 @@ def main() -> None:
     encoded = encode_video(
         models["svit"], models["tt"], models["heads"],
         clip_pixel_values, visibility_scores, frame_indices, flag_visibility_valid,
+        pool_identity=args.pool_identity,
+        skip_tt=skip_tt,
+        svit_chunk_size=RENDER_CHUNK_SIZE,
     )
     log("encode_video done")
     # Squeeze the batch dim (always 1 here - a single video) so FLAME/Renderer see
@@ -186,13 +247,32 @@ def main() -> None:
     pixel_values_per_frame = clip_pixel_values.squeeze(0)  # (N,3,H,W)
     face_masks_per_frame = torch.cat(face_mask_list, dim=0) if args.render_2d_recon else None  # (N,H,W)
 
-    num_panels = 1 + int(args.render_mesh) + int(args.render_2d_recon)
+    encoded_no_tt = None
+    if args.render_no_tt:
+        # SViT -> ComponentHeads directly, no TT refinement and no missing-frame
+        # averaging (unlike encode_video's tokens) - every frame is encoded fully
+        # independently here, exactly the encode_image path a single-image demo
+        # would take, just given all N frames as one batch.
+        encoded_no_tt = encode_image(
+            models["svit"], models["heads"], pixel_values_per_frame, svit_chunk_size=RENDER_CHUNK_SIZE,
+        )
+        log("encode_image (no-TT) done")
+
+    num_panels = 1 + int(args.render_mesh) + int(args.render_2d_recon) + int(args.render_no_tt)
     if args.render_orig:
         out_width, out_height = video_width * num_panels, video_height
     else:
         out_width, out_height = args.image_size * num_panels, args.image_size
     out_file = os.path.join(args.out_path, f"{video_name}.mp4")
     writer = cv2.VideoWriter(out_file, cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (out_width, out_height))
+
+    # --render_no_tt diff accounting: accumulated per-chunk below from tensors
+    # already computed for the mesh panels (no extra FLAME/SViT forward passes),
+    # restricted to valid frames (skips black-fallback frames, which would
+    # otherwise dominate the diff with meaningless garbage-vs-garbage values).
+    param_diff_sums = {name: 0.0 for name in DIFF_PARAM_NAMES}
+    vertex_diff_sum = 0.0
+    diff_valid_frame_count = 0
 
     for start in range(0, num_frames, RENDER_CHUNK_SIZE):
         end = min(start + RENDER_CHUNK_SIZE, num_frames)
@@ -203,6 +283,21 @@ def main() -> None:
         if args.render_mesh:
             render_out = models["renderer"](flame_out["vertices"], cam_for_proj)
             mesh_frames = render_out["rendered_img"]
+
+        mesh_frames_no_tt = None
+        if args.render_no_tt:
+            chunk_no_tt = {name: value[start:end] for name, value in encoded_no_tt.items()}
+            flame_out_no_tt, cam_for_proj_no_tt = run_flame(models["flame"], chunk_no_tt)
+            render_out_no_tt = models["renderer"](flame_out_no_tt["vertices"], cam_for_proj_no_tt)
+            mesh_frames_no_tt = render_out_no_tt["rendered_img"]
+
+            valid_chunk_mask = torch.tensor(valid_list[start:end], dtype=torch.bool, device=args.device)
+            for name in DIFF_PARAM_NAMES:
+                diff = (chunk[name] - chunk_no_tt[name]).norm(dim=-1)  # (chunk_size,)
+                param_diff_sums[name] += diff[valid_chunk_mask].sum().item()
+            vertex_diff = (flame_out["vertices"] - flame_out_no_tt["vertices"]).norm(dim=-1).mean(dim=-1)  # (chunk_size,)
+            vertex_diff_sum += vertex_diff[valid_chunk_mask].sum().item()
+            diff_valid_frame_count += int(valid_chunk_mask.sum().item())
 
         recon_frames = None
         if args.render_2d_recon:
@@ -218,18 +313,29 @@ def main() -> None:
                 panels = [cv2.cvtColor(frames[idx], cv2.COLOR_BGR2RGB)]
                 if mesh_frames is not None:
                     panels.append(_warp_to_orig(mesh_frames[i : i + 1], tform_list[idx], video_height, video_width))
+                if mesh_frames_no_tt is not None:
+                    panels.append(_warp_to_orig(mesh_frames_no_tt[i : i + 1], tform_list[idx], video_height, video_width))
                 if recon_frames is not None:
                     panels.append(_warp_to_orig(recon_frames[i : i + 1], tform_list[idx], video_height, video_width))
             else:
                 panels = [cropped_rgb_list[idx]]
                 if mesh_frames is not None:
                     panels.append(tensor_to_uint8_rgb(mesh_frames[i : i + 1]))
+                if mesh_frames_no_tt is not None:
+                    panels.append(tensor_to_uint8_rgb(mesh_frames_no_tt[i : i + 1]))
                 if recon_frames is not None:
                     panels.append(tensor_to_uint8_rgb(recon_frames[i : i + 1]))
             writer.write(make_panel(*panels))
         log(f"rendered {end}/{num_frames} frames")
 
     writer.release()
+
+    if args.render_no_tt and diff_valid_frame_count > 0:
+        print("[demo] TT vs no-TT diff (mean L2, valid frames only):")
+        for name in DIFF_PARAM_NAMES:
+            print(f"    {name:>10s}: {param_diff_sums[name] / diff_valid_frame_count:.4f}")
+        print(f"    {'vertices':>10s}: {vertex_diff_sum / diff_valid_frame_count:.4f} (mesh, mean per-vertex L2)")
+
     status = f"checkpoint step {step}" if step is not None else "no checkpoint - sanity test"
     print(f"[ok] wrote {out_file} ({num_frames} frames, {status}) (total {time.perf_counter() - start_time:.1f}s)")
 

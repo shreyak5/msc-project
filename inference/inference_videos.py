@@ -30,6 +30,7 @@ from dataset_processing.dataloading.video_frames import (  # noqa: E402
     frame_indices_for_segment,
     valid_mask_for_segment,
 )
+from model import constants  # noqa: E402
 from model.encoding import encode_video  # noqa: E402
 from preprocessing.io import load_frames  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
@@ -37,6 +38,7 @@ from utils.inference_utils import (  # noqa: E402
     build_models,
     load_available_checkpoint,
     make_crop_parse_pool,
+    peek_num_expression_params,
     run_flame,
     run_parallel_crop_and_parse,
     timestamped_out_dir,
@@ -53,6 +55,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input_path", type=str, required=True, help="Directory of video files.")
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--tt_variant", type=str, default="original", choices=["original", "simple", "gated"],
+        help="TemporalTransformer architecture --checkpoint was trained with (training/config.py's "
+        "Stage2Config.tt_variant) - must match, since the variants have different parameter shapes "
+        "for the 'tt' checkpoint key.",
+    )
+    parser.add_argument(
+        "--tt_gamma", type=float, default=constants.TT_GATE_GAMMA,
+        help="Visibility-gate sharpness, only used when --tt_variant gated; must match the "
+        "checkpoint's training-time tt_gamma (not recoverable from the checkpoint itself).",
+    )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--xseg_device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--out_path", type=str, default="inference/output/videos")
@@ -221,7 +234,10 @@ def main() -> None:
     args = parse_args()
     args.out_path = timestamped_out_dir(args.out_path)
 
-    models = build_models(args.device, use_unet=False)
+    models = build_models(
+        args.device, use_unet=False, tt_variant=args.tt_variant, tt_gamma=args.tt_gamma,
+        num_expression_params=peek_num_expression_params(args.checkpoint),
+    )
     step = load_available_checkpoint(models, args.checkpoint, args.device)
 
     video_paths = gather_video_paths(args.input_path)

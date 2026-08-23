@@ -21,6 +21,65 @@ from model import constants
 from model.losses.regularization import l2_regularization, log_scale_regularization
 
 
+_LOSS_TERM_WEIGHTS: dict[str, float] = {
+    "photometric": constants.PHOTOMETRIC_LOSS_WEIGHT,
+    "vgg": constants.VGG_LOSS_WEIGHT,
+    "emotion": constants.EMOTION_LOSS_WEIGHT,
+    "landmark": constants.LANDMARK_LOSS_WEIGHT,
+    "closure": constants.CLOSURE_LOSS_WEIGHT,
+    "mica": constants.MICA_SHAPE_LOSS_WEIGHT,
+    "mesh": constants.MESH_LOSS_LAMBDA,
+    "lvc": constants.VERTEX_CONSISTENCY_LOSS_LAMBDA,
+    "expr_cycle": constants.CYCLE_LOSS_WEIGHT,
+    "id_cycle": constants.IDENTITY_CYCLE_LOSS_WEIGHT,
+    "vel_expr": constants.TEMPORAL_VELOCITY_WEIGHT,
+    "vel_jaw": constants.TEMPORAL_VELOCITY_WEIGHT,
+    "vel_camera": constants.TEMPORAL_VELOCITY_WEIGHT,
+    "vel_shape": constants.TEMPORAL_VELOCITY_WEIGHT,
+}
+
+
+def weighted_metrics(metrics: dict, extra_weights: dict[str, float] | None = None) -> dict:
+    """Console-only companion to a raw metrics dict (compute_2d_losses/
+    compute_3d_losses/run_pass_a/run_pass_b/run_pass_c's return values):
+    multiplies each entry that has a known weight (the same value each term
+    is scaled by before being summed into that function's returned total) by
+    that weight, so a step's print line can show both the raw per-term loss
+    and its actual contribution to the total. Recurses into nested dicts
+    (e.g. run_pass_a's {"2d": {...}, "3d": {...}}).
+
+    Deliberately not sent to wandb (unlike the raw metrics dict) - wandb
+    already has the weight constants as run config, so a weighted curve
+    there would just be a scalar multiple of the raw one, and the raw curve
+    is what stays comparable across runs if a weight ever changes.
+
+    extra_weights: for terms whose weight is a per-call config value rather
+    than a fixed constants.py value - currently just "vertex_smooth"
+    (Stage2Config.temporal_vertex_smoothness_weight), which
+    compute_temporal_smoothness_losses scales by a caller-supplied argument,
+    not a module-level constant, so it can't live in _LOSS_TERM_WEIGHTS.
+    training/stage2.py's train() passes {"vertex_smooth":
+    cfg.temporal_vertex_smoothness_weight} here for that reason. Overrides
+    _LOSS_TERM_WEIGHTS on key collision.
+
+    Terms with no weight found in either mapping (reg_2d/reg_3d/reg/
+    num_pairs) are silently dropped: regularization_loss already bakes its
+    own internal per-field weights into the value it returns (no further
+    outer multiplication happens before summing), and num_pairs isn't a
+    loss.
+    """
+    weights = {**_LOSS_TERM_WEIGHTS, **(extra_weights or {})}
+    result: dict = {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            nested = weighted_metrics(value, extra_weights)
+            if nested:
+                result[key] = nested
+        elif key in weights:
+            result[key] = weights[key] * value
+    return result
+
+
 def gated_loss(loss_fn: Callable[..., torch.Tensor], valid_mask: torch.Tensor, *tensors: torch.Tensor) -> torch.Tensor:
     """loss_fn: any of this project's (predicted, target) -> scalar loss
     functions (fan_boundary_loss, mediapipe_landmark_loss, eye_closure_loss,

@@ -1,0 +1,24 @@
+# occlusion-experiment1.md: Pass C alone, region-masked landmarks + vertex-space
+# visibility-gated expressive-region smoothness, resumed from the stage2_A
+# checkpoint. Checkpointed to its own subdirectory so the stage2_A baseline stays
+# available for comparison.
+seed: 42
+learning_rate: 0.00001
+num_steps: 10000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/passC_occlusion_exp
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+datasets_yaml_path: dataset_processing/config/datasets_sign_language_only.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 5000
+param_smoothness_in_pass_c: false
+mouth_gate_use_region_visibility: false

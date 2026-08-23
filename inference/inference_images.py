@@ -19,6 +19,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_processing.dataloading.detector_pool import get_detector  # noqa: E402
+from model import constants  # noqa: E402
 from model.encoding import encode_image  # noqa: E402
 from preprocessing.io import is_image_file  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
@@ -27,6 +28,7 @@ from utils.inference_utils import (  # noqa: E402
     build_models,
     crop_and_tensor,
     load_available_checkpoint,
+    peek_num_expression_params,
     run_flame,
     timestamped_out_dir,
 )
@@ -39,6 +41,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch image inference: SViT -> heads -> FLAME parameters.")
     parser.add_argument("--input_path", type=str, required=True, help="Image file or directory of images.")
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--tt_variant", type=str, default="original", choices=["original", "simple", "gated"],
+        help="TemporalTransformer architecture --checkpoint was trained with (training/config.py's "
+        "Stage2Config.tt_variant) - must match, since the variants have different parameter shapes "
+        "for the 'tt' checkpoint key (unused by this image-only script, but still loaded).",
+    )
+    parser.add_argument(
+        "--tt_gamma", type=float, default=constants.TT_GATE_GAMMA,
+        help="Visibility-gate sharpness, only used when --tt_variant gated; must match the "
+        "checkpoint's training-time tt_gamma (not recoverable from the checkpoint itself).",
+    )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--detector_device", type=str, default="cpu")
     parser.add_argument("--out_path", type=str, default="inference/output/images")
@@ -114,7 +127,10 @@ def main() -> None:
     args = parse_args()
     args.out_path = timestamped_out_dir(args.out_path)
 
-    models = build_models(args.device, use_unet=False)
+    models = build_models(
+        args.device, use_unet=False, tt_variant=args.tt_variant, tt_gamma=args.tt_gamma,
+        num_expression_params=peek_num_expression_params(args.checkpoint),
+    )
     step = load_available_checkpoint(models, args.checkpoint, args.device)
 
     image_paths = gather_image_paths(args.input_path)

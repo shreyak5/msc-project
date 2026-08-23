@@ -14,6 +14,7 @@ chumpy
 pyyaml
 plyfile
 pytest
+wandb
 pytorch-lightning  # only needed to unpickle assets/ResNet50/*.ckpt (a Lightning-format
                    # checkpoint, model/emotion/emotion_net.py) - not used for training itself
 git+https://github.com/ibug-group/face_detection.git

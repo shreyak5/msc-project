@@ -1,0 +1,43 @@
+# Pass C occlusion-only clip subset: exact copy of
+# stage2_passC_id_pooling_gate_reshape.yaml (identity pooling on, delta_vis
+# gate reshaping, beta=1.5), plus pass_c_occlusion_subset_index_dir - restricts
+# Pass C's own clip_loader to only clip windows scripts/build_occlusion_index.py
+# found to contain a genuine occlusion event (frame-to-frame |Δvisibility_ratio|
+# >= 0.1, matching vertex_gate_delta_cap below), so the delta_vis gate actually
+# fires on (close to) every Pass C batch instead of occasionally. pass_pattern
+# stays [A, C] (NOT [C]-only/"Pass AC") deliberately - this isolates the
+# occlusion-subset restriction as the only new variable against the Stage 2
+# baseline; Pass A keeps training svit/heads/unet on the full, unrestricted
+# image data exactly as it does there. Run scripts/build_occlusion_index.py
+# first to populate pass_c_occlusion_subset_index_dir before launching this.
+# Own checkpoint_dir/wandb_run_name (passC_occlusion_subset) so this never
+# collides with the existing passC_occlusion_exp*/passC_id_pooling* families.
+seed: 42
+learning_rate: 0.00001
+num_steps: 10000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/passC_occlusion_subset
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+datasets_yaml_path: dataset_processing/config/datasets_sign_language_only.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 5000
+param_smoothness_in_pass_c: false
+mouth_gate_use_region_visibility: false
+pass_c_identity_pooling: true
+vertex_gate_mode: delta_vis
+vertex_gate_delta_cap: 0.1
+vertex_gate_delta_beta: 1.5
+pass_c_occlusion_subset_index_dir: dataset_processing/occlusion_clip_index
+tt_variant: gated
+tt_gamma: 3.0
+wandb_run_name: passC_occlusion_subset
+

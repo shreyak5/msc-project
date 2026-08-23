@@ -1,0 +1,53 @@
+# AABC extension of the stage2_50_AAB_UNet100_v3 line: pass_pattern gains a C
+# step (round-robin [A, A, B, C], same 100:1 Pass B encoder:unet ratio as
+# before), with gated TT (tt_variant: gated) for that new C step. Seeded from
+# stage2_50_AAB_UNet100_v3's own checkpoint (svit/heads/unet warm-start; tt
+# starts fresh since v3 never had a tt_variant=gated TT), optimizer restarted
+# from scratch (resume_optimizer_and_step: false) rather than resumed.
+#
+# Pass C occlusion-experiment fields carried over from
+# stage2_passC_occlusion_exp_gated_tt.yaml (landmark_occlusion_masking,
+# expressive_region_smooth_weight), except:
+# - temporal_vertex_smoothness_weight raised 5000 -> 190000. In that
+#   reference run this term covered only ~1% of Pass C's loss; 190000 targets
+#   ~30% instead, so Pass C's own intent (asserting temporal smoothness) is
+#   the dominant signal, with the 2D reconstruction/landmark/etc. losses
+#   there mainly to keep it grounded. Extrapolated from a single late-training
+#   snapshot of a differently-patterned run - expect to check
+#   pass_C/temporal/vertex_smooth vs pass_C/2d/* in wandb after the first
+#   checkpoint interval and adjust on a restart if the achieved fraction is
+#   off target.
+# - param_smoothness_in_pass_c: true (that reference run had it off).
+#   temporal_velocity_weight_in_pass_c overrides the global default (0.1) up
+#   to 1.0 so this param-space term is a real secondary smoothness signal
+#   (~6-7% of Pass C's loss) rather than negligible at the default weight.
+#
+# datasets_yaml_path left unset (full default registry), unlike the
+# sign-language-only restriction in the gated_tt reference run.
+seed: 42
+learning_rate: 0.00001
+num_steps: 100000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_50_AABC_UNet100_gated_tt
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain_50/step_00059999.pt
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_50_AAB_UNet100_v3/step_00025999.pt
+resume_optimizer_and_step: false
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+num_expression_params: 50
+pass_pattern: [A, A, B, C]
+pass_b_encoder_steps: 100
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0
+warmup_steps: 1000
+tt_variant: gated
+tt_gamma: 3.0
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 190000
+param_smoothness_in_pass_c: true
+temporal_velocity_weight_in_pass_c: 1.0
+mouth_gate_use_region_visibility: false
+wandb_project: msc-project-50
+wandb_run_name: stage2_50_AABC_UNet100_gated_tt

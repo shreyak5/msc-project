@@ -59,6 +59,50 @@ def build_region_weights(
     return weights
 
 
+def build_gated_expressive_region_weights(
+    flame_masks_path: str | Path = _REPO_ROOT / constants.RENDERER_FLAME_MASKS_PATH,
+    num_vertices: int = constants.EXPECTED_NUM_FLAME_VERTICES,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Region weighting for Pass C's vertex-space, visibility-gated temporal
+    smoothness term (occlusion-experiment1.md's Change 2) - a DIFFERENT scheme from
+    build_region_weights' mesh-loss weighting above: there, MESH_LOSS_EXPRESSIVE_
+    REGIONS get a flat 2.0 always; here, that same region set is isolated into its
+    own mask instead of a flat weight, since its effective weight is meant to be
+    dynamically gated per frame-pair by occlusion (heavy only when the pair is
+    occluded, so genuine fast motion like mouthings/blinks isn't damped - see
+    model/losses/temporal_smoothness.py's vertex_velocity_penalty, which combines
+    the two tensors returned here with a caller-supplied per-frame-pair gate).
+
+    Returns (base_weights, gated_region_mask), both (num_vertices,):
+    - base_weights: 1.0 for "face"/"boundary" only, 0.0 for MESH_LOSS_EXPRESSIVE_
+      REGIONS (handled separately via gated_region_mask below, never double
+      counted) and for MESH_LOSS_EYEBALL_REGIONS (applied last so they win over
+      any face/eye_region overlap - same priority-order reasoning as
+      build_region_weights) and everything not in a named region (neck/ears/
+      scalp, default 0).
+    - gated_region_mask: 1.0 at every vertex in MESH_LOSS_EXPRESSIVE_REGIONS (lips,
+      eye_region, left/right_eye_region, nose, forehead), 0.0 everywhere else.
+
+    A frame-pair's effective per-vertex weight is
+    base_weights + gated_region_mask * (1 + (expressive_region_smooth_weight - 1) * gate)
+    - see vertex_velocity_penalty's own docstring for the full formula."""
+    with open(flame_masks_path, "rb") as f:
+        flame_masks = pickle.load(f, encoding="latin1")
+
+    base = torch.zeros(num_vertices)
+    base[flame_masks["face"]] = 1.0
+    base[flame_masks["boundary"]] = 1.0
+    for region in constants.MESH_LOSS_EYEBALL_REGIONS:
+        base[flame_masks[region]] = 0.0
+    for region in constants.MESH_LOSS_EXPRESSIVE_REGIONS:
+        base[flame_masks[region]] = 0.0  # applied last: never double count with gated_region_mask below
+
+    gated = torch.zeros(num_vertices)
+    for region in constants.MESH_LOSS_EXPRESSIVE_REGIONS:
+        gated[flame_masks[region]] = 1.0
+    return base, gated
+
+
 def region_weighted_mesh_loss(
     predicted_vertices: torch.Tensor, gt_vertices: torch.Tensor, vertex_weights: torch.Tensor
 ) -> torch.Tensor:

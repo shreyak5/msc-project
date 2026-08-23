@@ -1,0 +1,50 @@
+# 50-expression-dim variant of stage2_AB.yaml: Pass A/A/B round-robin
+# (pass_pattern: [A, A, B]), seeded from stage2_50_unet_warmup's own final
+# checkpoint (step_00007999.pt) rather than the 100-dim pretrain run's.
+# pass_b_encoder_steps=50/pass_b_unet_steps=1 gives Pass B's own internal
+# encoder:unet alternation a 50:1 ratio (see Stage2Config.pass_b_encoder_steps'
+# docstring) - "UNet50" in checkpoint_dir, matching stage2_AB.yaml's own
+# stage2_AAB_UNet50_id naming (minus the _id suffix).
+#
+# checkpoint_dir now a _v4 suffix: re-run under a further-adjusted loss recipe
+# (model/constants.py: LANDMARK_LOSS_WEIGHT 10->100, CLOSURE_LOSS_WEIGHT split
+# out to its own 10, MESH_LOSS_LAMBDA 2.0->4.0, REG_EXPRESSION_WEIGHT split out
+# - see those constants' own comments). REG_EXPRESSION_WEIGHT history: _v2
+# tried 1e-2 (confirmed the general reweighting direction working - expression
+# norm on a held-out test image dropped ~28.6 -> ~9.1 at matched step 12999 -
+# but judged too strong after continued training to step 38999, visibly
+# over-suppressing expressiveness); _v3 halved to 5e-3, visually confirmed
+# natural and slightly more expressive than _v2; _v4 (this one) lowers further
+# to SMIRK's own literal 1e-3, per explicit request to push toward more
+# expressive outputs having already seen 5e-3 trend the right direction. Each
+# version restarts from stage2_50_unet_warmup's checkpoint again (not resumed
+# from the prior version's progress) for a clean comparison isolating just the
+# regularization-strength change each time. Every prior version's checkpoints
+# are left on disk, untouched, for comparison.
+#
+# stage1_checkpoint_pth is kept pointing at the true Stage 1 origin
+# (pretrain_50) purely for documentation/consistency with stage2_AB.yaml's own
+# convention - it's ignored once checkpoint_pth is set (as it is here).
+# num_expression_params: 50 must match checkpoint_pth's own dim.
+#
+# learning_rate=1e-5 (10x lower than the unet_warmup/pretrain configs' 1e-4)
+# matches stage2_AB.yaml/stage2_AB_copy.yaml's own choice for this
+# further-fine-tuning-from-a-stable-checkpoint stage.
+seed: 42
+learning_rate: 0.00001
+num_steps: 100000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_50_AAB_UNet50_v4
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain_50/step_00059999.pt
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_50_AAB_UNet50_v4/step_00026999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+num_expression_params: 50
+pass_pattern: [A, A, B]
+pass_b_encoder_steps: 50
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0
+warmup_steps: 1000
+wandb_project: msc-project-pretrain-50
+resume_optimizer_and_step: true

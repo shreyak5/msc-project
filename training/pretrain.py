@@ -18,8 +18,11 @@ FLAME; MICA/landmark targets are already precomputed and cached (Sec 5.3).
 from __future__ import annotations
 
 import argparse
+import dataclasses
+from pathlib import Path
 
 import torch
+import wandb
 from torch.nn.parallel import DistributedDataParallel
 
 from dataset_processing.dataloading.combined_loader import build_combined_loader
@@ -37,8 +40,9 @@ from model.losses.mica_shape import mica_shape_loss
 from training.checkpoint import load_checkpoint, save_checkpoint
 from training.distributed import cleanup_distributed, is_distributed, is_main_process, setup_distributed
 from training.config import PretrainConfig, load_pretrain_config
-from training.loss_utils import concat_category_fields, gated_loss, next_batch, regularization_loss
+from training.loss_utils import concat_category_fields, gated_loss, next_batch, regularization_loss, weighted_metrics
 from training.losses_3d import compute_3d_losses
+from training.wandb_utils import flatten_metrics
 
 _REPO_ROOT_RELATIVE_FARL_PATH = "pretrained_weights/farl/FaRL-Base-Patch16-LAIONFace20M-ep64.pth"
 
@@ -84,12 +88,16 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
     rank, world_size, local_rank, device = setup_distributed(fallback_device=cfg.device)
     if is_main_process(rank):
         print(f"config: {cfg}")
+        wandb.init(
+            project=cfg.wandb_project, entity=cfg.wandb_entity, name=cfg.wandb_run_name,
+            job_type="stage1", config=dataclasses.asdict(cfg),
+        )
 
     try:
         svit = SViT().to(device)
         load_farl_pretrained(svit, _REPO_ROOT_RELATIVE_FARL_PATH)
-        heads = ComponentHeads().to(device)
-        flame = FLAME().to(device)
+        heads = ComponentHeads(expression_dim=cfg.num_expression_params).to(device)
+        flame = FLAME(n_exp=cfg.num_expression_params).to(device)
         region_weights = build_region_weights().to(device)
 
         # Built on the plain (not-yet-DDP-wrapped) parameters - this stays valid
@@ -105,7 +113,10 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
         # rank reading the same checkpoint file from shared storage.
         start_step = 0
         if checkpoint_pth is not None:
-            loaded_step = load_checkpoint(checkpoint_pth, {"svit": svit, "heads": heads}, optimizer, device)
+            loaded_step = load_checkpoint(
+                checkpoint_pth, {"svit": svit, "heads": heads}, optimizer, device,
+                expected_num_expression_params=cfg.num_expression_params,
+            )
             start_step = loaded_step + 1
 
         if is_distributed():
@@ -143,8 +154,8 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
         for step in range(start_step, cfg.num_steps):
             batch, iterator, epoch = next_batch(loader, iterator, epoch)
             batch_2d = concat_category_fields(batch, ["2d_image", "2d_video"], keys_2d, device)
-            batch_3d = concat_category_fields(batch, ["3d_image", "3d_video"], keys_3d, device)
-            subject_ids_3d = batch["3d_image"]["subject_id"] + batch["3d_video"]["subject_id"]
+            batch_3d = concat_category_fields(batch, ["3d_image"], keys_3d, device)
+            subject_ids_3d = batch["3d_image"]["subject_id"]
 
             loss_2d, metrics_2d = compute_2d_losses(svit, heads, flame, batch_2d)
             loss_3d, metrics_3d = compute_3d_losses(svit, heads, flame, region_weights, batch_3d, subject_ids_3d, device)
@@ -157,11 +168,24 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
             if is_main_process(rank) and step % cfg.log_interval_steps == 0:
                 print(
                     f"step {step} (epoch {epoch}): total={total_loss.item():.4f} "
-                    f"2d={metrics_2d} 3d={metrics_3d}"
+                    f"2d={metrics_2d} 3d={metrics_3d} "
+                    f"2d_weighted={weighted_metrics(metrics_2d)} 3d_weighted={weighted_metrics(metrics_3d)}"
                 )
+                if wandb.run is not None:
+                    wandb.log(
+                        {
+                            "total": total_loss.item(),
+                            **flatten_metrics(metrics_2d, "2d"),
+                            **flatten_metrics(metrics_3d, "3d"),
+                        },
+                        step=step,
+                    )
 
             if is_main_process(rank) and (step + 1) % cfg.checkpoint_interval_steps == 0:
-                path = save_checkpoint(cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer)
+                path = save_checkpoint(
+                    cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer,
+                    num_expression_params=cfg.num_expression_params,
+                )
                 print(f"saved checkpoint: {path}")
 
         # Unconditional final save: cfg.num_steps isn't guaranteed to be a
@@ -173,12 +197,17 @@ def train(cfg: PretrainConfig, checkpoint_pth: str | None = None) -> None:
         # harmless. Guarded by step >= start_step so the num_steps<=start_step
         # edge case (loop never ran) skips this redundant save entirely.
         if is_main_process(rank) and step >= start_step:
-            path = save_checkpoint(cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer)
+            path = save_checkpoint(
+                cfg.checkpoint_dir, step, {"svit": svit, "heads": heads}, optimizer,
+                num_expression_params=cfg.num_expression_params,
+            )
             print(f"saved final checkpoint: {path}")
 
         if is_main_process(rank):
             print("DONE!")
     finally:
+        if is_main_process(rank) and wandb.run is not None:
+            wandb.finish()
         cleanup_distributed()
 
 
@@ -188,6 +217,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_pretrain_config(args.config)
+    if cfg.wandb_run_name is None:
+        cfg.wandb_run_name = Path(cfg.checkpoint_dir).name
     train(cfg, checkpoint_pth=cfg.checkpoint_pth)
 
 

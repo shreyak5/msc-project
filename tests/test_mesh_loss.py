@@ -7,7 +7,11 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import constants  # noqa: E402
-from model.losses.mesh import build_region_weights, region_weighted_mesh_loss  # noqa: E402
+from model.losses.mesh import (  # noqa: E402
+    build_gated_expressive_region_weights,
+    build_region_weights,
+    region_weighted_mesh_loss,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,6 +93,63 @@ def test_gradients_are_exactly_zero_at_zero_weight_vertices():
     zero_mask = weights == 0
     assert torch.all(pred.grad[:, zero_mask] == 0)
     assert torch.any(pred.grad[:, weights > 0] != 0)
+
+
+def test_gated_expressive_region_weights_shape_and_values():
+    base, gated = build_gated_expressive_region_weights()
+    assert base.shape == (constants.EXPECTED_NUM_FLAME_VERTICES,)
+    assert gated.shape == (constants.EXPECTED_NUM_FLAME_VERTICES,)
+    assert set(base.unique().tolist()) <= {0.0, 1.0}
+    assert set(gated.unique().tolist()) <= {0.0, 1.0}
+
+
+def test_gated_expressive_region_weights_lips_isolated():
+    """MESH_LOSS_EXPRESSIVE_REGIONS (lips, eye_region, left/right_eye_region, nose,
+    forehead) should be 1.0 in gated_region_mask and 0.0 in base_weights - never
+    double counted between the two tensors, even where "face" broadly overlaps
+    with expressive sub-regions (e.g. eye_region/nose are largely a subset of the
+    broader "face" vertex set)."""
+    import pickle
+
+    with open(_REPO_ROOT / constants.RENDERER_FLAME_MASKS_PATH, "rb") as f:
+        flame_masks = pickle.load(f, encoding="latin1")
+
+    base, gated = build_gated_expressive_region_weights()
+    for region in constants.MESH_LOSS_EXPRESSIVE_REGIONS:
+        assert torch.all(gated[flame_masks[region]] == 1.0)
+        assert torch.all(base[flame_masks[region]] == 0.0)
+
+    # "boundary" doesn't overlap any expressive region at all, so it should be
+    # fully 1.0 in base_weights and fully 0.0 in gated_region_mask.
+    assert torch.all(base[flame_masks["boundary"]] == 1.0)
+    assert torch.all(gated[flame_masks["boundary"]] == 0.0)
+
+    # "face" DOES broadly overlap expressive regions - only the face vertices
+    # that are NOT in any expressive region should be 1.0 in base_weights.
+    expressive_idx = set()
+    for region in constants.MESH_LOSS_EXPRESSIVE_REGIONS:
+        expressive_idx.update(flame_masks[region].tolist())
+    face_only_idx = [i for i in flame_masks["face"].tolist() if i not in expressive_idx]
+    assert len(face_only_idx) > 0  # sanity: the two sets aren't identical
+    assert torch.all(base[face_only_idx] == 1.0)
+    assert torch.all(gated[face_only_idx] == 0.0)
+
+
+def test_gated_expressive_region_weights_eyeballs_zero_despite_overlap():
+    """Eyeballs overlap with the broader face region but should end up zero in
+    BOTH tensors regardless - base_weights applies MESH_LOSS_EYEBALL_REGIONS after
+    face/boundary (same priority-order reasoning as build_region_weights), and
+    gated_region_mask never sets them at all since they're not in
+    MESH_LOSS_EXPRESSIVE_REGIONS."""
+    import pickle
+
+    with open(_REPO_ROOT / constants.RENDERER_FLAME_MASKS_PATH, "rb") as f:
+        flame_masks = pickle.load(f, encoding="latin1")
+
+    base, gated = build_gated_expressive_region_weights()
+    for region in constants.MESH_LOSS_EYEBALL_REGIONS:
+        assert torch.all(base[flame_masks[region]] == 0.0)
+        assert torch.all(gated[flame_masks[region]] == 0.0)
 
 
 def test_loss_scale_independent_of_batch_size():

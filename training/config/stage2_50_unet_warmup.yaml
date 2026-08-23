@@ -1,0 +1,25 @@
+# 50-expression-dim variant of stage2_unet_warmup.yaml: Stage 2 Pass-A-only run
+# seeded from pretrain_50's own final checkpoint rather than the 100-dim
+# pretrain run's. Unlike stage2_unet_warmup.yaml, freeze_encoder is left at its
+# default (false) - svit/heads train jointly with unet in Pass A here, per
+# explicit request, rather than a pure UNet-only warmup against frozen
+# geometry. num_expression_params: 50 must match
+# stage1_checkpoint_pth's own dim (training/checkpoint.py validates this on
+# load - a mismatch raises a clear error rather than corrupting the seed).
+# num_steps: 8000, per an explicit request (not modeled on stage2_unet_warmup.
+# yaml's own 100000 - this is a shorter, separate warmup for the 50-dim line of
+# experiments, not intended to match Stage 1/other Stage 2 runs' step counts).
+seed: 42
+learning_rate: 0.0001
+num_steps: 8000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_50_unet_warmup
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain_50/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+num_expression_params: 50
+pass_pattern: [A]
+freeze_encoder: false
+warmup_steps: 1000
+wandb_project: msc-project-pretrain-50

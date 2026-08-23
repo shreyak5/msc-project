@@ -1,0 +1,16 @@
+seed: 42
+learning_rate: 0.00001
+num_steps: 100000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_AC_new_no_occ
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+# pass_c_synthetic_occlusion_prob: 
+# pass_c_occlusion_loss_weight: 

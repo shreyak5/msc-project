@@ -1,0 +1,30 @@
+# checkpoint_dir now a _v4 suffix: re-run under the reweighted loss recipe
+# (model/constants.py: LANDMARK_LOSS_WEIGHT 10->100, CLOSURE_LOSS_WEIGHT split
+# out to its own 10, MESH_LOSS_LAMBDA 2.0->4.0, REG_EXPRESSION_WEIGHT split out
+# - see those constants' own comments). This lineage's own numbering starts at
+# _v3 (not _v2): it was first created after the 50-dim lineage had already
+# moved on to REG_EXPRESSION_WEIGHT=5e-3, so _v3 here started directly at
+# 5e-3 - there was no 1e-2 stage on this 100-dim line at all (unlike the
+# 50-dim lineage's own _v2, which did try 1e-2 and found it too strong). This
+# _v4 lowers to 1e-3, matching the 50-dim lineage's current value, per the
+# same "push toward more expressive outputs" request. Each version restarted
+# (not resumed) from stage2_unet_warmup's checkpoint - the same starting point
+# this line originally branched from - for a clean comparison isolating just
+# the weight change each time. No num_expression_params override: this is the
+# original 100-dim lineage (default), unlike the 50-dim configs.
+seed: 42
+learning_rate: 0.00001
+num_steps: 100000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/stage2_AAB_UNet50_v4
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+pass_pattern: [A, A, B]
+pass_b_encoder_steps: 50
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_AAB_UNet50_v4/step_00026999.pt
+resume_optimizer_and_step: true

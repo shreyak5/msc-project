@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from model import constants
-from model.config import COMPONENT_TOKENS
+from model.config import get_component_tokens
 
 
 class ComponentHead(nn.Module):
@@ -46,10 +46,23 @@ class ComponentHeads(nn.Module):
     caller reassembles from TemporalTransformer's stacked output into that same
     dict form - see model.config.COMPONENT_TOKENS for the canonical ordering)."""
 
-    def __init__(self, embed_dim: int = constants.SVIT_EMBED_DIM):
+    def __init__(
+        self,
+        embed_dim: int = constants.SVIT_EMBED_DIM,
+        expression_dim: int = constants.FLAME_EXPRESSION_DIM,
+    ):
         super().__init__()
+        # Exposed publicly so callers that only have `heads` (not the config that
+        # built it) can recover the expression parameter count it was sized for -
+        # see model/encoding.py's encode_image/encode_video, which read this to
+        # split the expression head's combined expression+eyelid output correctly
+        # regardless of expression_dim.
+        self.expression_dim = expression_dim
         self.heads = nn.ModuleDict(
-            {t.name: ComponentHead(embed_dim, t.param_dim, t.name) for t in COMPONENT_TOKENS}
+            {
+                t.name: ComponentHead(embed_dim, t.param_dim, t.name)
+                for t in get_component_tokens(expression_dim)
+            }
         )
 
     def forward(self, features: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:

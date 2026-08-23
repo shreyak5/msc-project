@@ -1,0 +1,24 @@
+# 50-expression-dim variant of pretrain.yaml: trains with num_expression_params=50
+# instead of the default 100, so the model's full expression vector exactly
+# matches the FaMoS expression templates' native dimensionality (model/
+# constants.py's EXPRESSION_TEMPLATE_NUM_DIMS) used by Stage 2 Pass B's
+# cycle-consistency template injection (model/losses/cycle.py) - the motivation
+# being to see whether focusing capacity on just those 50 components performs as
+# well. A fresh run (no checkpoint_pth): the existing pretrain checkpoint was
+# trained at num_expression_params=100 and can't be resumed into a differently-
+# shaped expression head (see training/checkpoint.py's dim validation) - own
+# checkpoint_dir (pretrain_50) so it never collides with the 100-dim run's own
+# checkpoints.
+seed: 42
+learning_rate: 0.0001
+num_steps: 60000
+log_interval_steps: 50
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/pretrain_50
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+num_expression_params: 50
+# Separate wandb project from the default "msc-project-pretrain" - keeps this
+# experiment's runs (and any smoke tests under it) from mixing with the 100-dim
+# pretrain run's history.
+wandb_project: msc-project-pretrain-50

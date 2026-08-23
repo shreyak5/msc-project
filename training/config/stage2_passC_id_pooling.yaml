@@ -1,0 +1,36 @@
+# Pass C identity-pooling experiment: exact copy of
+# stage2_passC_occlusion_exp_gated_tt.yaml, plus pass_c_identity_pooling: true.
+# Isolates identity pooling (model/encoding.py's _pool_identity, threaded
+# through Stage2Config.pass_c_identity_pooling) as the ONLY new variable
+# against that existing gated-TT baseline - everything else (tt_variant,
+# temporal_vertex_smoothness_weight, expressive_region_smooth_weight,
+# param_smoothness_in_pass_c, landmark_occlusion_masking, datasets, warm-start
+# checkpoint) stays identical. Own checkpoint_dir/wandb_run_name
+# (passC_id_pooling) so this never collides with or gets confused for the
+# existing passC_occlusion_exp* family. See stage2-config-reference.md for
+# what pass_c_identity_pooling does and why.
+seed: 42
+learning_rate: 0.00001
+num_steps: 10000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/passC_id_pooling
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+datasets_yaml_path: dataset_processing/config/datasets_sign_language_only.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 5000
+param_smoothness_in_pass_c: false
+mouth_gate_use_region_visibility: false
+pass_c_identity_pooling: true
+tt_variant: gated
+tt_gamma: 3.0
+wandb_run_name: passC_id_pooling
+

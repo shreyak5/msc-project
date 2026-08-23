@@ -1,0 +1,48 @@
+# Pass C smoothness-boost experiment: exact copy of
+# stage2_passC_occlusion_subset.yaml (identity pooling, delta_vis gate
+# reshaping, occlusion-only clip subset), plus a substantial increase to both
+# smoothness terms' weights - temporal_vertex_smoothness_weight: 5000 -> 10000
+# (2x), and param_smoothness_in_pass_c switched back on with
+# temporal_velocity_weight_in_pass_c: 1.0 (10x the default 0.1, using the new
+# per-run override field added specifically for this experiment). Projected
+# (static, real-data-measured) combined smoothness share: vertex_smooth ~14.3%
+# + param_vel ~12.8% =~ 27% of the total Pass C loss, vs. ~9% today - see this
+# session's own loss-fraction analysis for the full projection table and the
+# real occlusion_subset breakdown these projections started from.
+# Sibling: stage2_passC_occlusion_subset_smoothness_15k.yaml (same idea, larger
+# weights). Both share slurm_jobs/stage2_passC_occlusion_subset_smoothness.sh,
+# which takes the config path as its own argument rather than each experiment
+# needing its own slurm script.
+# Own checkpoint_dir/wandb_run_name (passC_occlusion_subset_smoothness_10k) so
+# this never collides with the existing passC_occlusion_exp*/passC_id_pooling*/
+# passC_occlusion_subset families.
+seed: 42
+learning_rate: 0.00001
+num_steps: 10000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/passC_occlusion_subset_smoothness_10k
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+datasets_yaml_path: dataset_processing/config/datasets_sign_language_only.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 10000
+param_smoothness_in_pass_c: true
+temporal_velocity_weight_in_pass_c: 1.0
+mouth_gate_use_region_visibility: false
+pass_c_identity_pooling: true
+vertex_gate_mode: delta_vis
+vertex_gate_delta_cap: 0.1
+vertex_gate_delta_beta: 1.5
+pass_c_occlusion_subset_index_dir: dataset_processing/occlusion_clip_index
+tt_variant: gated
+tt_gamma: 3.0
+wandb_run_name: passC_occlusion_subset_smoothness_10k
+

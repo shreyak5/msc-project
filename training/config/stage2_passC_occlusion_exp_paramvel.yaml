@@ -1,0 +1,31 @@
+# occlusion-experiment1.md's Pass-C-only ablation (see
+# stage2_passC_occlusion_exp.yaml), with the existing param-space temporal
+# velocity term (expression/jaw/camera/shape, training/stage2.py's
+# compute_temporal_smoothness_losses) switched back ON in Pass C
+# (param_smoothness_in_pass_c: true) alongside the vertex-space term - the
+# baseline experiment runs with only the vertex-space term active. Original
+# TemporalTransformer (tt_variant left at its "original" default). Everything
+# else identical to stage2_passC_occlusion_exp.yaml; only param_smoothness_in_pass_c
+# and checkpoint_dir differ (own subdirectory so the baseline's checkpoints stay
+# untouched).
+seed: 42
+learning_rate: 0.00001
+num_steps: 10000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/passC_occlusion_exp_paramvel
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+datasets_yaml_path: dataset_processing/config/datasets_sign_language_only.yaml
+pass_pattern: [A, C]
+warmup_steps: 1000
+checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/stage2_A/step_00007999.pt
+resume_optimizer_and_step: false
+pass_c_synthetic_occlusion_enabled: false
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 5000
+param_smoothness_in_pass_c: true
+mouth_gate_use_region_visibility: false
+

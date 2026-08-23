@@ -89,16 +89,35 @@ _UPPER_LIP_IDX = _embedded_indices(_UPPER_OUTER_LIP + _UPPER_INNER_LIP)
 _LOWER_LIP_IDX = _embedded_indices(_LOWER_OUTER_LIP + _LOWER_INNER_LIP)
 
 
-def fan_boundary_loss(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def fan_boundary_loss(
+    predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """predicted, target: (B, >=17, 2) 2D FAN landmarks -> scalar MSE over the
-    boundary/jaw-contour points only (indices [:17], matching SMIRK's own usage)."""
-    return F.mse_loss(predicted[:, :NUM_FAN_BOUNDARY_POINTS], target[:, :NUM_FAN_BOUNDARY_POINTS])
+    boundary/jaw-contour points only (indices [:17], matching SMIRK's own usage).
+
+    mask: (B, >=17) bool, optional - True=keep. None (default) reproduces the
+    original plain MSE over all boundary points exactly. When given, per-point
+    squared error is masked and averaged over kept points only - see
+    _masked_point_mean's docstring for the weighting/0-guard details."""
+    pred_b = predicted[:, :NUM_FAN_BOUNDARY_POINTS]
+    tgt_b = target[:, :NUM_FAN_BOUNDARY_POINTS]
+    if mask is None:
+        return F.mse_loss(pred_b, tgt_b)
+    mask_b = mask[:, :NUM_FAN_BOUNDARY_POINTS]
+    return _masked_point_mean((pred_b - tgt_b) ** 2, mask_b)
 
 
-def mediapipe_landmark_loss(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def mediapipe_landmark_loss(
+    predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """predicted, target: (B, 105, 2) 2D MediaPipe landmarks (curated embedding
-    order) -> scalar MSE over all 105 points."""
-    return F.mse_loss(predicted, target)
+    order) -> scalar MSE over all 105 points.
+
+    mask: (B, 105) bool, optional - see fan_boundary_loss's own docstring for the
+    masking/weighting convention (identical here, just over all 105 points)."""
+    if mask is None:
+        return F.mse_loss(predicted, target)
+    return _masked_point_mean((predicted - target) ** 2, mask)
 
 
 def _opening_distance(points: torch.Tensor, upper_idx: torch.Tensor, lower_idx: torch.Tensor) -> torch.Tensor:
@@ -112,18 +131,105 @@ def _opening_distance(points: torch.Tensor, upper_idx: torch.Tensor, lower_idx: 
     return torch.sqrt(((upper - lower) ** 2).sum(dim=-1) + 1e-12)
 
 
-def eye_closure_loss(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def landmark_visibility_mask(face_mask: torch.Tensor, landmarks_norm: torch.Tensor) -> torch.Tensor:
+    """face_mask: (B, H, W) float, XSeg convention (1=visible face skin, 0=occluded/
+    background) - the same crop-pixel-space mask already cached per-frame (dataset_
+    processing/dataloading/face_parsing_cache.py) and used for the UNet's pixel-
+    blackout input (model/flame/masking.py). landmarks_norm: (B, N, 2), normalized
+    to [-1, 1] in (x, y) order - the same convention landmark_cache.py's _normalize
+    and FLAME's projected landmarks both use.
+
+    Returns (B, N) bool: True where that landmark's 2D position samples as visible
+    face skin (bilinear face_mask value > 0.5), False where occluded/background OR
+    projected outside the crop entirely (F.grid_sample's zero-padding treats
+    out-of-bounds as occluded - conservative, since a point outside the crop has no
+    positive evidence of visibility either).
+
+    Callers must pass GT/target landmarks here (batch_2d["landmarks_fan"/
+    "landmarks_mp"]), never a model's projected/predicted landmarks: occlusion is a
+    property of where the real facial feature actually is in this frame, not of the
+    model's current (possibly wrong, especially early in training) guess - using the
+    prediction would answer the wrong question and could let the model soften its own
+    loss just by predicting into an occluded region."""
+    grid = landmarks_norm.unsqueeze(2)  # (B, N, 1, 2), grid_sample's (B, H_out, W_out, 2)
+    sampled = F.grid_sample(
+        face_mask.unsqueeze(1), grid, mode="bilinear", padding_mode="zeros", align_corners=False,
+    )  # (B, 1, N, 1)
+    return sampled.squeeze(1).squeeze(-1) > 0.5  # (B, N)
+
+
+def mouth_point_indices() -> torch.Tensor:
+    """Deduped union of _UPPER_LIP_IDX/_LOWER_LIP_IDX (indices into the 105-point
+    curated MediaPipe order) - a public accessor for callers outside this module
+    (training/stage2.py's optional mouth-region-visibility gate for the vertex-space
+    smoothness term) that need the mouth/lip landmark set without reaching into the
+    underscore-prefixed internals directly."""
+    return torch.cat([_UPPER_LIP_IDX, _LOWER_LIP_IDX]).unique()
+
+
+def _masked_point_mean(sq_or_abs_err: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    """sq_or_abs_err: (B, N, 2) per-point per-coord error. mask: (B, N) bool or None.
+    None -> plain mean over every element (the original, unmasked behavior). Given ->
+    weighted mean over kept points only ("normalize by kept landmarks, not total", so
+    a heavily-occluded frame doesn't silently shrink its own loss contribution just
+    because most of its points are zeroed), denominator clamped to a minimum of 1e-8
+    to guard the all-occluded 0/0 edge case (mirrors temporal_smoothness.py's
+    velocity_penalty denom.clamp pattern) - that case contributes ~0, not NaN."""
+    if mask is None:
+        return sq_or_abs_err.mean()
+    denom = (mask.sum().float() * sq_or_abs_err.shape[-1]).clamp(min=1e-8)
+    return (sq_or_abs_err * mask.unsqueeze(-1)).sum() / denom
+
+
+def _masked_pair_mean(abs_err: torch.Tensor, pair_mask: torch.Tensor | None) -> torch.Tensor:
+    """abs_err: (B, num_pairs) per-pair error (already |pred_dist - gt_dist|).
+    pair_mask: (B, num_pairs) bool or None. Same masked-weighted-mean/0-guard pattern
+    as _masked_point_mean, but for closure losses' per-PAIR (not per-point) unit of
+    supervision."""
+    if pair_mask is None:
+        return abs_err.mean()
+    denom = pair_mask.sum().float().clamp(min=1e-8)
+    return (abs_err * pair_mask).sum() / denom
+
+
+def eye_closure_loss(
+    predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """predicted, target: (B, 105, 2) MediaPipe landmarks -> scalar L1 loss between
     predicted and target eyelid-opening distances (not absolute landmark position) -
-    a more direct signal for blinks than position error alone."""
+    a more direct signal for blinks than position error alone.
+
+    mask: (B, 105) bool, optional - the same per-POINT occlusion mask
+    mediapipe_landmark_loss takes (landmark_visibility_mask's output), reduced here
+    to a per-PAIR mask (upper AND lower both visible) since this loss's unit of
+    supervision is a pair's opening distance, not either point alone - a pair is
+    dropped if either landmark is occluded. None (default) reproduces the original
+    unmasked loss exactly."""
     pred_dist = _opening_distance(predicted, _UPPER_EYELID_IDX, _LOWER_EYELID_IDX)
     gt_dist = _opening_distance(target, _UPPER_EYELID_IDX, _LOWER_EYELID_IDX)
-    return (pred_dist - gt_dist).abs().mean()
+    abs_err = (pred_dist - gt_dist).abs()
+    if mask is None:
+        return abs_err.mean()
+    pair_mask = (
+        mask[:, _UPPER_EYELID_IDX.to(mask.device)] & mask[:, _LOWER_EYELID_IDX.to(mask.device)]
+    ).float()
+    return _masked_pair_mean(abs_err, pair_mask)
 
 
-def lip_closure_loss(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def lip_closure_loss(
+    predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """predicted, target: (B, 105, 2) MediaPipe landmarks -> scalar L1 loss between
-    predicted and target lip-opening distances (inner + outer lip line)."""
+    predicted and target lip-opening distances (inner + outer lip line).
+
+    mask: (B, 105) bool, optional - same per-pair-reduction convention as
+    eye_closure_loss's own `mask` parameter (see its docstring)."""
     pred_dist = _opening_distance(predicted, _UPPER_LIP_IDX, _LOWER_LIP_IDX)
     gt_dist = _opening_distance(target, _UPPER_LIP_IDX, _LOWER_LIP_IDX)
-    return (pred_dist - gt_dist).abs().mean()
+    abs_err = (pred_dist - gt_dist).abs()
+    if mask is None:
+        return abs_err.mean()
+    pair_mask = (
+        mask[:, _UPPER_LIP_IDX.to(mask.device)] & mask[:, _LOWER_LIP_IDX.to(mask.device)]
+    ).float()
+    return _masked_pair_mean(abs_err, pair_mask)

@@ -15,18 +15,13 @@ def _make_inputs(batch_size=2, num_frames=11, num_components=4, dim=768, device=
     return tokens, visibility, frame_indices
 
 
-def _mask_row_index(batch, frame, head, num_frames, num_heads):
-    """Row index into attn_mask's collapsed (B*N*num_heads) batch axis, matching
-    _compute_attn_mask's (B, N, H) -> B*N*H reshape order (B slowest, H fastest)."""
-    return (batch * num_frames + frame) * num_heads + head
-
-
-def _mask_col_index(query_frame, key_frame, key_component, radius, num_components):
-    """Column index into attn_mask's (w*num_components) key axis for a query at
-    query_frame attending to key_frame (must satisfy |query_frame - key_frame| <=
-    radius, or it isn't addressable at all). window offset k = key_frame -
-    query_frame + radius, expanded to token granularity (window-major,
-    component-minor - see _gather_local_windows' docstring on ordering)."""
+def _key_col_index(query_frame, key_frame, key_component, radius, num_components):
+    """Column index into distance_bias's/visibility_logits' (w*num_components) key
+    axis for a query at query_frame attending to key_frame (must satisfy
+    |query_frame - key_frame| <= radius, or it isn't addressable at all). window
+    offset k = key_frame - query_frame + radius, expanded to token granularity
+    (window-major, component-minor - see _gather_local_windows' docstring on
+    ordering)."""
     offset = key_frame - query_frame + radius
     return offset * num_components + key_component
 
@@ -62,18 +57,34 @@ def test_gradients_flow_after_perturbing_output_proj():
 
     assert tt.component_type_embedding.grad is not None
     assert tt.output_proj.weight.grad is not None
-    assert tt.blocks[0].attn.in_proj_weight.grad is not None
+    # q_proj/k_proj only feed the QK+ALiBi heads; v_proj/out_proj feed both head
+    # types - checking all four confirms both attention paths are actually wired
+    # into the graph, not just one of them.
+    assert tt.blocks[0].q_proj.weight.grad is not None
+    assert tt.blocks[0].k_proj.weight.grad is not None
+    assert tt.blocks[0].v_proj.weight.grad is not None
+    assert tt.blocks[0].out_proj.weight.grad is not None
     assert tokens.grad is not None
 
 
-def test_m_n_head_grid_matches_config():
+def test_alibi_slopes_match_config():
     cfg = TTConfig()
     tt = TemporalTransformer(cfg)
-    assert tt.m_slopes.shape == (cfg.num_heads,)
-    assert tt.n_slopes.shape == (cfg.num_heads,)
-    pairs = set(zip(tt.m_slopes.tolist(), tt.n_slopes.tolist()))
-    expected = {(m, n) for m in cfg.m_values for n in cfg.n_values}
-    assert pairs == expected
+    num_alibi_heads = cfg.num_heads - cfg.num_visibility_heads
+    assert tt.alibi_slopes.shape == (num_alibi_heads,)
+    # Press et al.'s standard ALiBi geometric sequence, sized to num_alibi_heads:
+    # slope_i = 2^(-8*i/num_alibi_heads) for i = 1..num_alibi_heads.
+    expected = [2.0 ** (-8.0 * i / num_alibi_heads) for i in range(1, num_alibi_heads + 1)]
+    assert torch.allclose(tt.alibi_slopes, torch.tensor(expected), atol=1e-6)
+    assert tt.num_alibi_heads == num_alibi_heads
+
+
+def test_block_has_exactly_one_visibility_head():
+    tt = TemporalTransformer()
+    block = tt.blocks[0]
+    assert block.num_visibility_heads == 1
+    assert block.num_alibi_heads == tt.config.num_heads - 1
+    assert block.num_alibi_heads + block.num_visibility_heads == tt.config.num_heads
 
 
 def test_padded_frames_do_not_affect_valid_frame_outputs():
@@ -100,44 +111,111 @@ def test_padded_frames_do_not_affect_valid_frame_outputs():
     assert not torch.isnan(out_b).any()
 
 
-def test_window_mean_excludes_padded_frames():
-    # Default window_size=15 (radius=7) comfortably covers this 4-frame clip, so
-    # every real frame is addressable from query frame 0 - only the explicit
-    # valid_mask=False frames are excluded, same scenario as before the local-window
-    # rewrite, just with new addressing into attn_mask (see _mask_row/col_index).
+def test_distance_bias_matches_formula_and_is_visibility_independent():
+    # The QK+ALiBi heads' bias is now distance-only - it must not depend on
+    # visibility at all (unlike the old combined bias's m_h * s_tilde_j term).
     tt = TemporalTransformer()
     num_components = 4
     num_frames = 4
     radius = tt.config.window_size // 2
-    visibility = torch.tensor([[0.9, 0.1, 5.0, -5.0]])  # last two are "padding" garbage
+    frame_indices = torch.arange(num_frames).unsqueeze(0).float()
+    valid_mask = torch.ones(1, num_frames, dtype=torch.bool)
+
+    visibility_a = torch.tensor([[0.9, 0.1, 0.5, 0.5]])
+    visibility_b = torch.tensor([[0.0, 999.0, -999.0, 0.5]])
+
+    bias_a = tt._compute_distance_bias(frame_indices, valid_mask, num_components)
+    bias_b = tt._compute_distance_bias(frame_indices, valid_mask, num_components)
+    assert torch.allclose(bias_a, bias_b)  # distance bias never reads visibility at all
+
+    # bias(query=0, key=1, head=h) = -alibi_slopes[h] * 1
+    col = _key_col_index(query_frame=0, key_frame=1, key_component=0, radius=radius, num_components=num_components)
+    for h in range(tt.num_alibi_heads):
+        bias_val = bias_a[0, 0, h, 0, col].item()
+        assert abs(bias_val - (-tt.alibi_slopes[h].item() * 1.0)) < 1e-4
+
+    # bias(query=0, key=0 [itself], head=h) = -alibi_slopes[h] * 0 = 0
+    col0 = _key_col_index(query_frame=0, key_frame=0, key_component=0, radius=radius, num_components=num_components)
+    assert torch.allclose(bias_a[0, 0, :, 0, col0], torch.zeros(tt.num_alibi_heads), atol=1e-6)
+    del visibility_a, visibility_b  # unused on purpose - see assertion above
+
+
+def test_distance_bias_masks_padded_keys():
+    tt = TemporalTransformer()
+    num_components = 4
+    num_frames = 4
+    radius = tt.config.window_size // 2
     frame_indices = torch.arange(num_frames).unsqueeze(0).float()
     valid_mask = torch.tensor([[True, True, False, False]])
 
-    attn_mask = tt._compute_attn_mask(visibility, frame_indices, valid_mask, num_components)
-    # mean over only the 2 valid frames (0.9, 0.1) = 0.5
-    expected_mean = 0.5
-    # bias(query frame=0, key frame=0 [itself], head=0) = m_0 * (0.9 - 0.5) - n_0 * 0
-    m0 = tt.m_slopes[0].item()
-    row = _mask_row_index(batch=0, frame=0, head=0, num_frames=num_frames, num_heads=tt.config.num_heads)
-    col = _mask_col_index(query_frame=0, key_frame=0, key_component=0, radius=radius, num_components=num_components)
-    bias_00 = attn_mask[row, 0, col].item()
-    assert abs(bias_00 - m0 * (0.9 - expected_mean)) < 1e-4
+    bias = tt._compute_distance_bias(frame_indices, valid_mask, num_components)
+    # query frame 0, key frame 2 (marked invalid by valid_mask)
+    col = _key_col_index(query_frame=0, key_frame=2, key_component=0, radius=radius, num_components=num_components)
+    assert (bias[0, 0, :, 0, col] <= -1e8).all()
 
 
-def test_padded_keys_get_large_negative_bias():
+def test_visibility_logits_equal_raw_score_no_mean_subtraction():
+    # The visibility-only head uses the RAW per-frame score directly - no window-mean
+    # subtraction (that normalization was only ever needed to feed the old combined
+    # m_h * s_tilde_j bias term, which no longer exists). visibility_temperature=1.0
+    # pinned explicitly (rather than relying on TTConfig's default) so this test's
+    # raw-score comparison stays correct regardless of what the default temperature
+    # is tuned to elsewhere - see test_visibility_temperature_* for temperature
+    # scaling itself.
+    tt = TemporalTransformer(TTConfig(visibility_temperature=1.0))
+    num_components = 4
+    num_frames = 4
+    radius = tt.config.window_size // 2
+    visibility = torch.tensor([[0.9, 0.1, 5.0, -5.0]])  # last two are "padding" garbage
+    valid_mask = torch.tensor([[True, True, False, False]])
+
+    logits = tt._compute_visibility_logits(visibility, valid_mask, num_components)
+    col = _key_col_index(query_frame=0, key_frame=0, key_component=0, radius=radius, num_components=num_components)
+    assert abs(logits[0, 0, 0, col].item() - 0.9) < 1e-4  # raw 0.9, not mean-subtracted
+
+    col1 = _key_col_index(query_frame=0, key_frame=1, key_component=0, radius=radius, num_components=num_components)
+    assert abs(logits[0, 0, 0, col1].item() - 0.1) < 1e-4
+
+
+def test_visibility_logits_mask_padded_keys():
     tt = TemporalTransformer()
     num_components = 4
     num_frames = 4
     radius = tt.config.window_size // 2
     visibility = torch.rand(1, num_frames)
-    frame_indices = torch.arange(num_frames).unsqueeze(0).float()
     valid_mask = torch.tensor([[True, True, False, False]])
 
-    attn_mask = tt._compute_attn_mask(visibility, frame_indices, valid_mask, num_components)
-    # query frame 0, key frame 2 (marked invalid by valid_mask)
-    row = _mask_row_index(batch=0, frame=0, head=0, num_frames=num_frames, num_heads=tt.config.num_heads)
-    col = _mask_col_index(query_frame=0, key_frame=2, key_component=0, radius=radius, num_components=num_components)
-    assert attn_mask[row, 0, col].item() <= -1e8
+    logits = tt._compute_visibility_logits(visibility, valid_mask, num_components)
+    col = _key_col_index(query_frame=0, key_frame=2, key_component=0, radius=radius, num_components=num_components)
+    assert (logits[0, 0, :, col] <= -1e8).all()
+
+
+def test_visibility_temperature_scales_valid_logits_only():
+    # Temperature divides the RAW score before masking - valid slots scale with it,
+    # but masked slots must stay exactly _MASK_VALUE regardless of temperature (not
+    # get scaled into something too weak to actually zero out attention weight).
+    tt = TemporalTransformer(TTConfig(visibility_temperature=2.0))
+    num_components = 4
+    num_frames = 4
+    radius = tt.config.window_size // 2
+    visibility = torch.tensor([[0.9, 0.1, 0.5, 0.5]])
+    valid_mask = torch.tensor([[True, True, False, False]])
+
+    logits = tt._compute_visibility_logits(visibility, valid_mask, num_components)
+    col0 = _key_col_index(query_frame=0, key_frame=0, key_component=0, radius=radius, num_components=num_components)
+    assert abs(logits[0, 0, 0, col0].item() - 0.9 / 2.0) < 1e-4
+
+    col2 = _key_col_index(query_frame=0, key_frame=2, key_component=0, radius=radius, num_components=num_components)
+    assert (logits[0, 0, :, col2] <= -1e8).all()  # masked slot unaffected by temperature
+
+
+def test_visibility_temperature_must_be_positive():
+    for bad_temperature in (0.0, -1.0):
+        try:
+            TemporalTransformer(TTConfig(visibility_temperature=bad_temperature))
+        except AssertionError:
+            continue
+        raise AssertionError(f"expected AssertionError for visibility_temperature={bad_temperature}")
 
 
 def test_boundary_frames_have_fewer_valid_neighbors():
@@ -168,9 +246,11 @@ def test_window_size_is_configurable():
     frame_indices = torch.arange(num_frames).unsqueeze(0).float()
     valid_mask = torch.ones(1, num_frames, dtype=torch.bool)
 
-    attn_mask = tt._compute_attn_mask(visibility, frame_indices, valid_mask, num_components)
     seq_len_kv = (2 * radius + 1) * num_components
-    assert attn_mask.shape == (1 * num_frames * tt.config.num_heads, num_components, seq_len_kv)
+    bias = tt._compute_distance_bias(frame_indices, valid_mask, num_components)
+    logits = tt._compute_visibility_logits(visibility, valid_mask, num_components)
+    assert bias.shape == (1, num_frames, tt.num_alibi_heads, num_components, seq_len_kv)
+    assert logits.shape == (1, num_frames, num_components, seq_len_kv)
     # 3 window slots * 4 components, not the default window_size=15's 15*4=60 -
     # confirms window_size is actually threaded through, not silently ignored.
     assert seq_len_kv == 12

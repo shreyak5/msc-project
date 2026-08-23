@@ -20,6 +20,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataset_processing.dataloading.detector_pool import get_detector  # noqa: E402
+from model import constants  # noqa: E402
 from model.encoding import encode_image  # noqa: E402
 from model.flame.masking import load_probabilities_per_flame_triangle  # noqa: E402
 from utils.inference_utils import (  # noqa: E402
@@ -30,6 +31,7 @@ from utils.inference_utils import (  # noqa: E402
     crop_tensor_and_compute_xseg_mask,
     load_available_checkpoint,
     make_panel,
+    peek_num_expression_params,
     render_2d_reconstruction,
     run_flame,
     tensor_to_uint8_rgb,
@@ -45,6 +47,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint", type=str, default=None,
         help="Optional trained checkpoint; omit to sanity-test the untrained model.",
+    )
+    parser.add_argument(
+        "--tt_variant", type=str, default="original", choices=["original", "simple", "gated"],
+        help="TemporalTransformer architecture --checkpoint was trained with (training/config.py's "
+        "Stage2Config.tt_variant) - must match, since the variants have different parameter shapes "
+        "for the 'tt' checkpoint key (unused by this single-image demo, but still loaded).",
+    )
+    parser.add_argument(
+        "--tt_gamma", type=float, default=constants.TT_GATE_GAMMA,
+        help="Visibility-gate sharpness, only used when --tt_variant gated; must match the "
+        "checkpoint's training-time tt_gamma (not recoverable from the checkpoint itself).",
     )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)
     parser.add_argument("--detector_device", type=str, default="cpu")
@@ -64,7 +77,10 @@ def main() -> None:
 
     args.out_path = timestamped_out_dir(args.out_path)
 
-    models = build_models(args.device, use_unet=args.render_2d_recon)
+    models = build_models(
+        args.device, use_unet=args.render_2d_recon, tt_variant=args.tt_variant, tt_gamma=args.tt_gamma,
+        num_expression_params=peek_num_expression_params(args.checkpoint),
+    )
     step = load_available_checkpoint(models, args.checkpoint, args.device)
     # Only needed by mesh_based_mask_uniform_faces (inside render_2d_reconstruction) to
     # bias which mesh-surface points become the UNet's sparse real-pixel input - not

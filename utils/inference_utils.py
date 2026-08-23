@@ -41,13 +41,15 @@ from dataset_processing.dataloading.face_parsing_cache import (
     visibility_ratio_from_mask_and_box,
 )
 from dataset_processing.dataloading.face_parsing_pool import get_xseg
+from model import constants
+from model.config import GatedTTConfig
 from model.encoder import SViT
 from model.farl_weights import load_farl_pretrained
 from model.flame.flame import FLAME
 from model.flame.renderer import Renderer, project_landmarks
 from model.generator import UNetGenerator
 from model.heads import ComponentHeads
-from model.temporal import TemporalTransformer
+from model.temporal import GatedTemporalTransformer, SimpleTemporalTransformer, TemporalTransformer
 from preprocessing.cropping import crop_face, crop_face_with_landmarks
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -65,18 +67,67 @@ def timestamped_out_dir(base_out_path: str) -> str:
     return out_dir
 
 
-def build_models(device: str, use_unet: bool = False) -> dict[str, nn.Module]:
+def peek_num_expression_params(checkpoint_path: str | None) -> int:
+    """Reads just the num_expression_params field training/checkpoint.py's
+    save_checkpoint always stores, without needing any model built yet -
+    build_models needs this value up front to size ComponentHeads'/FLAME's
+    expression dimension correctly, since load_available_checkpoint's per-module
+    load_state_dict(strict=False) only tolerates missing/unexpected *keys*, not a
+    same-named key with a mismatched shape (a checkpoint trained with a different
+    expression_dim has a differently-shaped heads.expression.linear.{weight,bias}).
+    None (no checkpoint - sanity-test mode) or a checkpoint that predates this
+    field -> constants.FLAME_EXPRESSION_DIM, the same historical-default fallback
+    training/checkpoint.py's own load_checkpoint uses."""
+    if checkpoint_path is None:
+        return constants.FLAME_EXPRESSION_DIM
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    return checkpoint.get("num_expression_params", constants.FLAME_EXPRESSION_DIM)
+
+
+def build_models(
+    device: str,
+    use_unet: bool = False,
+    tt_variant: str = "original",
+    tt_gamma: float = constants.TT_GATE_GAMMA,
+    num_expression_params: int = constants.FLAME_EXPRESSION_DIM,
+) -> dict[str, nn.Module]:
     """Mirrors training/stage2.py's train() construction block: every module
     built with config defaults (already tuned to match training). `flame` and
     `renderer` are included in the returned dict for convenience (callers need
     both regardless of which encode_* path they use), even though they're not
-    checkpointed modules themselves."""
+    checkpointed modules themselves.
+
+    tt_variant/tt_gamma mirror training/config.py's Stage2Config fields of the
+    same name (see training/stage2.py's own tt construction block) - a
+    checkpoint's tt weights were saved by whichever TT class that run's
+    tt_variant selected, and load_available_checkpoint's per-module
+    load_state_dict(strict=False) only tolerates missing/unexpected *keys*, not
+    a same-named key with a mismatched shape (e.g. GatedTTBlock/SimpleTTBlock's
+    full-width q_proj/k_proj vs TemporalTransformer's TTBlock, which sizes them
+    to the QK+ALiBi heads only) - so this must match whatever the checkpoint was
+    actually trained with. "simple" and "gated" TT have identical parameter
+    shapes to each other (only "original" differs), so which of those two a
+    checkpoint needs can't be auto-detected from its state dict; tt_gamma only
+    affects GatedTemporalTransformer's forward pass, not its parameter shapes,
+    so it isn't recoverable from the checkpoint either.
+
+    num_expression_params mirrors training/config.py's Stage2Config/PretrainConfig
+    field of the same name - unlike tt_variant, this IS recoverable from a
+    checkpoint (peek_num_expression_params above), since save_checkpoint always
+    records it; callers should peek it from args.checkpoint before calling this
+    rather than leaving it at the default, except in sanity-test (no-checkpoint)
+    mode where the default is already correct."""
     svit = SViT().to(device)
     load_farl_pretrained(svit, str(_FARL_CHECKPOINT_PATH))
-    heads = ComponentHeads().to(device)
-    flame = FLAME().to(device)
+    heads = ComponentHeads(expression_dim=num_expression_params).to(device)
+    flame = FLAME(n_exp=num_expression_params).to(device)
     renderer = Renderer(flame.faces_tensor).to(device)
-    tt = TemporalTransformer().to(device)
+    if tt_variant == "simple":
+        tt = SimpleTemporalTransformer().to(device)
+    elif tt_variant == "gated":
+        tt = GatedTemporalTransformer(GatedTTConfig(gamma=tt_gamma)).to(device)
+    else:
+        tt = TemporalTransformer().to(device)
 
     models = {"svit": svit, "heads": heads, "flame": flame, "renderer": renderer, "tt": tt}
     if use_unet:
@@ -86,7 +137,10 @@ def build_models(device: str, use_unet: bool = False) -> dict[str, nn.Module]:
     return models
 
 
-def load_available_checkpoint(models: dict[str, nn.Module], checkpoint_path: str | None, device: str) -> int | None:
+def load_available_checkpoint(
+    models: dict[str, nn.Module], checkpoint_path: str | None, device: str,
+    mismatched_out: set[str] | None = None,
+) -> int | None:
     """None -> no-op (pure sanity-test mode: svit keeps its FaRL-pretrained
     backbone, heads/tt/unet stay at from-scratch init). Otherwise loads
     whichever of `models`' keys are actually present in the checkpoint file -
@@ -94,7 +148,18 @@ def load_available_checkpoint(models: dict[str, nn.Module], checkpoint_path: str
     (checkpoint[name] KeyErrors on a miss), so this peeks at the file's keys
     first to gracefully support a Stage-1-only checkpoint (svit, heads), a full
     Stage-2 checkpoint (+ unet, tt), or anything in between, without the caller
-    needing to know in advance which kind of checkpoint it is."""
+    needing to know in advance which kind of checkpoint it is.
+
+    Per-module loading is strict=False, not strict=True: extends that same
+    graceful handling one level down, to a module whose *architecture* has
+    since changed (e.g. an older checkpoint's TT saved before the split-head
+    attention rework) rather than only a module missing outright. Any
+    missing/unexpected parameter keys are printed exactly like a missing
+    module is above, rather than either crashing (strict=True) or silently
+    leaving them unmentioned.
+
+    mismatched_out: if given, mismatched module names are added to this set,
+    so a caller can react (e.g. skip a module whose weights didn't load)."""
     if checkpoint_path is None:
         return None
 
@@ -108,7 +173,15 @@ def load_available_checkpoint(models: dict[str, nn.Module], checkpoint_path: str
         print(f"[checkpoint] ignoring unrequested keys in {checkpoint_path}: {sorted(unused)}")
 
     for name, module in available.items():
-        module.load_state_dict(checkpoint[name])
+        result = module.load_state_dict(checkpoint[name], strict=False)
+        if result.missing_keys or result.unexpected_keys:
+            print(
+                f"[checkpoint] {name}: architecture mismatch against {checkpoint_path} - "
+                f"missing {result.missing_keys}, unexpected {result.unexpected_keys} "
+                f"(unmatched params stay at current init)"
+            )
+            if mismatched_out is not None:
+                mismatched_out.add(name)
     return checkpoint["step"]
 
 
@@ -137,16 +210,23 @@ def compute_visibility_and_mask(
     crop_scale: float,
     image_size: int,
     device: str,
+    dataset: str = "inference",
 ) -> tuple[torch.Tensor, float, bool]:
     """Wraps dataset_processing.dataloading.face_parsing_cache.get_face_parsing
     - the exact live detect+XSeg-parse computation training's own cache-miss
     path already runs per frame. `cache_root` just needs to be a writable
     scratch directory (speeds up repeated runs over the same input; harmless
-    if left empty/fresh). Returns (face_mask: Tensor(1,H,W) on `device` - no
-    channel dim, matching training/stage2.py's _render_and_reconstruct's own
-    `face_mask.unsqueeze(1)` convention - visibility_ratio, valid)."""
+    if left empty/fresh). `dataset` defaults to "inference" (this module's
+    original demo/inference-script bucket) but a caller whose sample_id/frame
+    indexing matches an existing indexed dataset (e.g. evaluation/eval_core.py
+    evaluating a dataset's own test split) can pass that dataset's real name to
+    land in - and reuse - the same cache buckets training's own data loading
+    already populated, instead of a separate empty "inference" bucket. Returns
+    (face_mask: Tensor(1,H,W) on `device` - no channel dim, matching
+    training/stage2.py's _render_and_reconstruct's own `face_mask.unsqueeze(1)`
+    convention - visibility_ratio, valid)."""
     face_mask_np, visibility_ratio, valid = get_face_parsing(
-        cache_root, "inference", sample_id, frame_index,
+        cache_root, dataset, sample_id, frame_index,
         lambda: image_bgr,
         lambda: get_detector(detector_device, DETECTOR_THRESHOLD, DETECTOR_MODEL_NAME),
         lambda: get_xseg(xseg_device),
