@@ -83,6 +83,24 @@ def test_unreadable_source_writes_sentinel_and_returns_fallback(tmp_path):
     assert errors == ["corrupt file"]
 
 
+def test_none_source_writes_sentinel_and_returns_fallback(tmp_path):
+    """cv2.imread returns None (rather than raising) for a missing/corrupt/
+    zero-byte file - a real case hit in production (vocaset had 4 zero-byte
+    source frames), distinct from the raises-an-exception path above since
+    the try/except around load_source_image() never catches it."""
+    cache_root = tmp_path / "face_crop_cache"
+
+    crop = get_cropped_face(
+        cache_root, "test_dataset", "s0", None,
+        load_source_image=lambda: None,
+        get_detector=lambda: _NoFaceDetector(),
+        scale=1.4, image_size=224,
+    )
+
+    assert np.all(crop == 0)
+    assert sentinel_path(cache_root, "test_dataset", "s0", None, "unreadable").exists()
+
+
 def test_success_writes_into_bucket_container(tmp_path):
     cache_root = tmp_path / "face_crop_cache"
     image = np.zeros((256, 256, 3), dtype=np.uint8)

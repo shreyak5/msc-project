@@ -102,6 +102,27 @@ def test_unreadable_source_writes_sentinel_and_returns_invalid(tmp_path):
     assert errors == ["corrupt file"]
 
 
+def test_none_source_writes_sentinel_and_returns_invalid(tmp_path):
+    """cv2.imread returns None (rather than raising) for a missing/corrupt/
+    zero-byte file - a real case hit in production (vocaset had 4 zero-byte
+    source frames), distinct from the raises-an-exception path above since
+    the try/except around load_source_image() never catches it."""
+    cache_root = tmp_path / "mica_shape_cache"
+
+    shape, valid = get_mica_shape(
+        cache_root, "test_dataset", "s0", None,
+        load_source_image=lambda: None,
+        get_detector=lambda: _NoFaceDetector(),
+        get_mica=lambda: (_ for _ in ()).throw(AssertionError("MICA should never be constructed on an unreadable image")),
+        image_size=112,
+    )
+
+    assert valid is False
+    assert shape.shape == (MICA_SHAPE_DIM,)
+    assert np.all(shape == 0.0)
+    assert sentinel_path(cache_root, "test_dataset", "s0", None, "unreadable").exists()
+
+
 def test_success_writes_into_bucket_container(tmp_path):
     cache_root = tmp_path / "mica_shape_cache"
     image = np.zeros((256, 256, 3), dtype=np.uint8)

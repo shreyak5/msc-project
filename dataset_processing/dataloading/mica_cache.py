@@ -54,6 +54,11 @@ def compute_mica_shape(
         image = load_source_image()
     except Exception as exc:
         return MicaShapeResult(status="unreadable", error=str(exc))
+    if image is None:
+        # cv2.imread returns None (rather than raising) for a missing/corrupt/
+        # zero-byte file - the except above never catches that, so it needs
+        # its own check to stay on the "unreadable" degrade path.
+        return MicaShapeResult(status="unreadable", error="load_source_image returned None")
 
     aligned_crop, _ = crop_face_arcface(image, get_detector(), image_size=image_size)
 

@@ -49,6 +49,11 @@ def compute_cropped_face(
         image = load_source_image()
     except Exception as exc:
         return CropResult(status="unreadable", error=str(exc))
+    if image is None:
+        # cv2.imread returns None (rather than raising) for a missing/corrupt/
+        # zero-byte file - the except above never catches that, so it needs
+        # its own check to stay on the "unreadable" degrade path.
+        return CropResult(status="unreadable", error="load_source_image returned None")
 
     crop, _ = crop_face(image, get_detector(), scale=scale, image_size=image_size)
 

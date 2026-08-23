@@ -66,6 +66,11 @@ def _acquire_crop_or_sentinel(
         image = load_source_image()
     except Exception as exc:
         return FaceParsingResult(status="unreadable", error=str(exc))
+    if image is None:
+        # cv2.imread returns None (rather than raising) for a missing/corrupt/
+        # zero-byte file - the except above never catches that, so it needs
+        # its own check to stay on the "unreadable" degrade path.
+        return FaceParsingResult(status="unreadable", error="load_source_image returned None")
 
     cropped, _tform, landmarks_5pt_crop, box_crop = crop_face_with_landmarks(
         image, get_detector(), scale=crop_scale, image_size=image_size,
