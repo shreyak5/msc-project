@@ -35,13 +35,13 @@ Register at
 
 ## Required for Training / Evaluation
 
-6. **expression_templates_famos** (SMIRK's FaMoS-derived training data):
+- **expression_templates_famos** (SMIRK's FaMoS-derived training data):
    ```
    gdown --id 1wEL7KPHw2kl5DxP0UAB3h9QcQLXk7BM_ -O assets/expression_templates_famos.zip
    unzip -q assets/expression_templates_famos.zip -d assets/
    ```
 
-7. **ResNet50 (EMOCA emotion checkpoint)**
+- **ResNet50 (EMOCA emotion checkpoint)**
    (`ResNet50/checkpoints/deca-epoch=01-val_loss_total/dataloader_idx_0=1.27607644.ckpt`) \
    Register
    at [emoca.is.tue.mpg.de](https://emoca.is.tue.mpg.de/), then:
@@ -51,14 +51,14 @@ Register at
    unzip assets/ResNet50.zip -d assets/
    ```
 
-8. **mica.tar**
+- **mica.tar**
     ```
     wget -O assets/mica.tar "https://keeper.mpdl.mpg.de/f/db172dc4bd4f4c0f96de/?dl=1"
     ```
 
 
 
-10. **face_landmarker.task** 
+- **face_landmarker.task** 
     ```
     wget https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task \
       -O assets/face_landmarker.task
