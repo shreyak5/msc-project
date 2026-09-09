@@ -12,9 +12,8 @@ This work builds on [SMIRK](https://github.com/georgeretsi/smirk) and [TokenFace
 
 The work is also evaluated against the following baselines - [EMICA/inferno](https://github.com/radekd91/inferno/tree/master/inferno_apps/FaceReconstruction), [Pixel3DMM](https://github.com/SimonGiebenhain/pixel3dmm).
 
-## Navigating the codebase
+<!-- ## Navigating the codebase
 - `assets/` — FLAME model files, landmark embeddings, and other third-party assets required at runtime (gitignored, downloaded/extracted locally).
-- `baselines/` — Experiment outputs and timing results for baseline methods (INFERNO, Pixel3DMM, SMIRK) compared against this model.
 - `dataset_processing/` — Dataset config, dataloaders, indexers, and manifest schema used to load and prepare training/eval data.
 - `datasets/` — Notes on the datasets used (see `datasets/README.md`).
 - `evaluation/` — Evaluation pipeline: metrics, landmark extraction, and scripts to run evaluation over datasets/pretrained checkpoints.
@@ -25,4 +24,31 @@ The work is also evaluated against the following baselines - [EMICA/inferno](htt
 - `scripts/` — One-off/utility scripts for cache prewarming, analysis, and dataset migration.
 - `tests/` — Unit and smoke tests for the model, data pipeline, and utilities.
 - `training/` — Training loops and config for pretraining and Stage 2 fine-tuning.
-- `utils/` — Shared helpers (caching, landmark utilities, kernel smoothing, inference utilities).
+- `utils/` — Shared helpers (caching, landmark utilities, kernel smoothing, inference utilities). -->
+
+## Requirements setup
+
+### 1. Python environment & packages
+```
+cd msc-project
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+### 2. Post-install fixups
+```
+python scripts/fix_ibug_packaging.py
+uv pip install -e "./uniface[gpu]"
+```
+
+### 3. Assets
+Follow `assets/readme.md` for how to obtain the required
+model/data assets (FLAME, FaRL, MICA, etc.)
+
+
+## Demo script
+<!-- Run demo on a video (how2sign) / series of images -->
+
+## Training - each phase
+<!-- Point to how to setup the data -->

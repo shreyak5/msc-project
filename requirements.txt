@@ -9,32 +9,13 @@ tqdm
 torch==2.6.0
 torchvision==0.21.0
 torchaudio==2.6.0
+pytorch3d==0.7.8 
 timm
 chumpy
 pyyaml
 plyfile
 pytest
 wandb
-pytorch-lightning  # only needed to unpickle assets/ResNet50/*.ckpt (a Lightning-format
-                   # checkpoint, model/emotion/emotion_net.py) - not used for training itself
+pytorch-lightning  
 git+https://github.com/ibug-group/face_detection.git
 git+https://github.com/ibug-group/face_alignment.git
-
-# NOTE: the two ibug packages above install incomplete (their setup.py omits
-# subpackages like s3fd/retina_face/fan). After `pip install -r requirements.txt`,
-# also run: python scripts/fix_ibug_packaging.py
-
-# NOTE: uniface/ (used by scripts/segment_faces.py) is a vendored checkout, not
-# a pip requirement here. Install it separately into this venv with:
-#   uv pip install -e "./uniface[cpu]"   (or "[gpu]" for onnxruntime-gpu)
-#
-# XSeg (face parsing) runs via a PyTorch conversion of its ONNX weights
-# (uniface.torch_utils) instead of ONNX Runtime, since onnxruntime-gpu has no
-# linux-aarch64 wheels (e.g. this GH200 node). Install the extra it needs:
-#   uv pip install -e "./uniface[torch]"
-# Other uniface models (RetinaFace, BiSeNet, etc.) still go through
-# onnxruntime via the [cpu]/[gpu] extra above.
-
-# NOTE: model/flame/renderer.py needs pytorch3d (CUDA-compiled, not listed as a
-# plain pip dependency here since installation is version/CUDA-toolchain-specific).
-# Already installed in this environment (pytorch3d 0.7.8, torch 2.6.0+cu126).
