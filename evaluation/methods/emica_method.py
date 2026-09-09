@@ -1,18 +1,3 @@
-"""EMICA evaluation method.
-
-Like Pixel3DMM (see pixel3dmm_method.py's docstring), EMICA needs its own incompatible
-python/CUDA stack (baselines/inferno_experiments/ - a separate uv-managed venv, python
-3.9, torch+cu126, pytorch3d built from source), so this can't be a true in-process method
-like SmirkMethod/OursFullMethod. Unlike Pixel3DMM, EMICA is architecturally a single
-feed-forward regressor (one forward pass, no per-clip optimization loop) whose model takes
-a plain image tensor with no face-detection baked in - so predict_video() here is a single
-subprocess call per clip (baselines/inferno_experiments/scripts/eval_infer.py), not a
-multi-stage pipeline: write the same shared RetinaFace crop eval_core.py already produced
-for every other method, run one batched forward pass in the separate venv, read back plain
-.npy arrays it writes - this process never imports anything from inferno/inferno_apps
-itself, only numpy/cv2/subprocess.
-"""
-
 import os
 import shlex
 import shutil

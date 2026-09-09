@@ -1,25 +1,3 @@
-"""Diagnostic: probe TemporalTransformer's attention internals across a set of
-stage2 checkpoints, on a real video clip.
-
-TT's heads are no longer uniform (model/temporal.py), so this script reports two
-different things depending on head type, not one uniform per-head table:
-  - QK+ALiBi heads (num_alibi_heads of them): the two additive terms that make up
-    their pre-softmax logits - QK^T/sqrt(head_dim) (content attention) and
-    -n_h * |i-j| (ALiBi-style distance bias, Sec 4.4).
-  - The single visibility-only head: its logits ARE the raw per-key-frame
-    visibility score directly (Sec 4.4) - no QK term, no distance term, so
-    there's nothing to compare it against within its own softmax; it's reported
-    separately, not folded into the QK+ALiBi table.
-Also measures how far TT's output has actually moved from doing nothing:
-output_proj is zero-initialized (model/temporal.py), so TT(tokens) == tokens
-exactly until output_proj's weight/bias move away from zero during training.
-
-Usage:
-    python scripts/analyze_tt_attention.py \
-        [--checkpoint_dir /projects/u6ga/sk3925_misc/checkpoints/stage2_AC] \
-        [--input_path <frame_dir>]
-"""
-
 from __future__ import annotations
 
 import argparse

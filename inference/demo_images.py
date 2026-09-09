@@ -1,14 +1,3 @@
-"""Single-image demo: SViT -> ComponentHeads -> FLAME -> Renderer [-> UNet]
-(implementation-plan.md Sec 3: "Single image: skip step 2" - no TT). Mirrors
-SMIRK's own baselines/smirk_experiments/demo_updated.py, but for this
-project's own model. No trained checkpoint is required to run - omitting
---checkpoint sanity-tests the model at its FaRL-initialized-but-otherwise-
-untrained state.
-
-Usage:
-    python inference/demo_images.py --input_path <image> [--checkpoint <path>]
-"""
-
 from __future__ import annotations
 
 import argparse

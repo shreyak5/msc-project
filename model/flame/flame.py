@@ -1,40 +1,3 @@
-"""FLAME (Faces Learned with an Articulated Model and Expression) differentiable
-mesh model (implementation-plan.md Sec 9: "Reuse from SMIRK repo: ... FLAME wrapper
-(incl. eyelid blendshapes)").
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/FLAME/FLAME.py, MIT License, Copyright (c) 2024 George Retsinas), itself adapted
-from Sanyal et al.'s FLAME_PyTorch (MIT License for the wrapper class itself,
-https://github.com/soubhiksanyal/FLAME_PyTorch) - see model/flame/lbs.py's docstring
-for the underlying skinning math's own (non-commercial research) license chain.
-SMIRK's own addition on top of FLAME_PyTorch: eyelid blendshapes (l_eyelid.npy/
-r_eyelid.npy, copied into assets/, MIT licensed as part of SMIRK's contribution).
-
-The FLAME *model* itself (assets/FLAME2020/*.pkl) is separately licensed by the Max
-Planck Institute for Intelligent Systems for non-commercial research use only - see
-assets/FLAME2020/Readme.pdf. Use here is non-commercial academic research.
-
-Excludes FLAME.py's get_landmarks/_vertices2landmarks/seletec_3d68 methods: verified
-(via grep) unused anywhere in SMIRK's own codebase, and containing genuine bugs
-(undefined names) that happen to never be triggered because nothing calls them.
-Also excludes:
-- the zero_expression/zero_shape/zero_pose forward() flags and the expression/shape
-  zero-padding-if-too-short logic: both existed only because SMIRK's own encoder has
-  a configurable, possibly-smaller n_exp - our SViT/Heads always produce exactly
-  n_exp/n_shape-sized tensors, and a caller wanting a "zeroed" FLAME evaluation can
-  just pass zero tensors directly.
-- landmarks_fan_3d (the fixed, non-dynamic-contour 68-point 3D landmark set) and its
-  full_lmk_faces_idx/full_lmk_bary_coords buffers: unused by any loss in Sec 6 (the
-  "Landmark" loss projects landmarks_fan/landmarks_mp to 2D and compares against
-  detected 2D landmarks; the "Mesh" loss compares all vertices directly) - this was
-  only ever loaded/computed in SMIRK's wrapper for generality, not something this
-  project's losses consume.
-
-Camera token layout (Sec 2.2, model/constants.py): [scale(1), global_rotation(3),
-translation_xy(2)]. Only global_rotation is consumed here - scale/translation feed
-the renderer's weak-perspective projection (model/renderer.py), not FLAME itself.
-"""
-
 from __future__ import annotations
 
 import inspect
@@ -200,15 +163,6 @@ class FLAME(nn.Module):
         eyelid_params: torch.Tensor,
         global_rotation: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """shape_params: (B, n_shape), expression_params: (B, n_exp), jaw_params:
-        (B, 3), eyelid_params: (B, 2), global_rotation: (B, 3) - the latter two are
-        the ComponentHeads' "expression" token split at NUM_EYELID_PARAMS and the
-        "camera" token sliced at CAMERA_ROTATION_SLICE, respectively.
-
-        Returns: vertices (B,5023,3), landmarks_fan (B,68,3) - pose-adjusted 2D/FAN-
-        convention landmarks, meant to be projected to 2D and compared against
-        detected 2D landmarks (Sec 6) - and landmarks_mp (B,105,3), same idea for
-        FLAME's curated MediaPipe-convention landmark subset."""
         batch_size = shape_params.shape[0]
 
         eye_pose_params = self.eye_pose.expand(batch_size, -1)

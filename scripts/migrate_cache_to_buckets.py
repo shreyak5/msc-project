@@ -1,27 +1,3 @@
-"""Repackages an existing one-file-per-frame cache directory (crop_cache,
-mica_cache, face_parsing_cache, or landmark_cache) into the new bucket-
-container format (see utils/cache_utils.py's module docstring), bucket by
-bucket: read every real data file in a b1/b2/ directory, validate it still
-decodes correctly, pack the good ones into one b1/b2.zip container, verify
-by reopening and re-decoding every packed entry, move any .noface/.unreadable
-markers up to their new sentinel filename directly under b1/, then delete the
-now-empty b2/ directory.
-
-Pure byte repackaging - never constructs a detector/XSeg/MICA/FAN model,
-since every file this script touches already represents a successful (or
-sentinel) result from a previous run; nothing here is ever recomputed.
-
-Sharded by literal existing b1 (2-hex-char) directory name, not by hashing -
-migration's input is already a fixed set of real directories, so ownership
-over them is trivially disjoint without needing shard_of. Anything under
-cache_root/dataset/ that isn't shaped like a 2-hex-char directory (e.g. a
-prewarm_logs/ directory sitting alongside the bucket dirs) is skipped.
-
-Bucket-at-a-time (write -> verify -> delete), never a global build-
-everything-then-delete-everything pass: this bounds the transient file-count
-increase during migration itself to about one bucket at a time, which
-matters given the project's file quota is already at/over its limit."""
-
 from __future__ import annotations
 
 import argparse

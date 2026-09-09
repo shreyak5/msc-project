@@ -1,27 +1,3 @@
-"""Load FaRL-B's official pretrained ViT-B/16 weights into model.encoder.SViT
-(implementation-plan.md Sec 2.1: "Initialized from FaRL-B pretrained weights").
-
-Checkpoint: FaRL-Base-Patch16-LAIONFace20M-ep64.pth, official release from
-https://github.com/FacePerceiver/FaRL (Zheng et al., CVPR 2022, MIT License,
-Copyright (c) Microsoft Corporation).
-
-FaRL's checkpoint reuses OpenAI CLIP's ViT-B/16 verbatim; its "visual.*"-prefixed
-keys are (verified against the actual checkpoint):
-  conv1, class_embedding, positional_embedding, ln_pre,
-  transformer.resblocks.{0..11}.{ln_1,ln_2,attn,mlp}, ln_post, proj
-plus an unrelated masked-image-modeling branch (lm_transformer, lm_head, ln_lm,
-mask_token) that this loader ignores - it's an auxiliary training-only head, not
-part of the visual encoder we initialize from.
-
-positional_embedding has 197 rows: row 0 is the CLS token's position embedding,
-rows 1-196 are the 14x14 patch grid's. SViT has no CLS token, so only row 0 is
-dropped - the 196 patch rows ARE carried over and used to initialize SViT's
-pos_embed (trainable from there, per Sec 2.1).
-
-Not carried over at all: class_embedding (the CLS token itself - SViT has none)
-and proj (CLIP's image-text alignment head, irrelevant here).
-"""
-
 from __future__ import annotations
 
 import torch

@@ -86,18 +86,6 @@ def build_combined_loader(
     video_mode: Literal["frame_pool", "clip"] = "clip",
     occlusion_index_dir: str | Path | None = None,
 ) -> CombinedFaceLoader:
-    """video_mode: see build_category_dataset's docstring - applies to every video
-    category in this loader uniformly (Sec 5.2's single global per-pass switch),
-    not chosen independently per category.
-
-    occlusion_index_dir: Stage2Config.pass_c_occlusion_subset_index_dir -
-    directory of scripts/build_occlusion_index.py's per-dataset JSONL index
-    files. None (default) leaves every dataset's own build_category_dataset
-    call unfiltered, exactly as before this parameter existed. When given,
-    each registry entry's own <occlusion_index_dir>/<entry.name>.jsonl (if it
-    exists) restricts that one dataset's clip-mode VideoFaceDataset to only
-    occlusion-positive segments - see _load_occlusion_index/
-    build_category_dataset's own docstrings."""
     entries = load_datasets_yaml(datasets_yaml_path)
     by_category = datasets_by_category(entries)
 

@@ -1,19 +1,3 @@
-"""
-Workaround for a packaging bug in the upstream ibug-group repos.
-
-Both https://github.com/ibug-group/face_detection and
-https://github.com/ibug-group/face_alignment declare only their top-level
-package in setup.py (e.g. `'packages': ['ibug.face_detection']`), omitting
-their actual subpackages (s3fd, retina_face, fan, utils, ...). A plain
-`pip install git+https://...` therefore installs an ibug.face_detection /
-ibug.face_alignment that is missing everything except __init__.py, and
-`from ibug.face_detection import RetinaFacePredictor` fails with
-`ModuleNotFoundError: No module named 'ibug.face_detection.s3fd'`.
-
-This script clones both repos to a temp dir and copies their missing
-subpackages (weights included) into the already-installed site-packages
-location. Run it once after `pip install -r requirements.txt`.
-"""
 import shutil
 import subprocess
 import sys

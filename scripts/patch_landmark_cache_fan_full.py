@@ -1,29 +1,3 @@
-"""Patches the existing GT landmark cache (dataset_processing/dataloading/
-landmark_cache.py) with an additive `landmarks_fan_full` field (full 68-point
-FAN, normalized to [-1,1]) for the dev-split entries of a small set of datasets
-- by default how2sign/phoenix2014t/csl_daily, the three sign-language datasets
-periodic dev-set eval (training/stage2.py's run_periodic_eval_local) scores
-against.
-
-Why a separate patch rather than a fresh cache: the existing cache already
-stores a 17-point (jaw-boundary-only) FAN subset for every dataset/split, used
-as the training landmark loss's target (model/losses/landmark.py). Dev-set eval
-wants the full 68 points instead. Since dev-split entries are never read by the
-training data path, extending them with an extra field is safe - existing
-readers (get_landmarks) only ever request `landmarks_fan`/`landmarks_mp` and are
-unaffected.
-
-This is a READ-EXISTING -> MERGE -> WRITE-BACK patch, not a fresh write: each
-bucket container (utils/cache_utils.py) already holds many sample_ids' entries,
-and `write_bucket_entries` replaces whole entries by key - so patching must
-preserve every pre-existing field (landmarks_fan, flag_landmarks_fan_valid,
-landmarks_mp, flag_landmarks_mp_valid) of the key being patched, not just add
-the two new ones, or those fields would be silently deleted for that key.
-
-Idempotent/resumable: an entry that already has `landmarks_fan_full` is skipped,
-so this script can be safely re-run (e.g. after a partial/interrupted shard).
-"""
-
 import argparse
 import csv
 import functools

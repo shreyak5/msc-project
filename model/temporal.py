@@ -1,53 +1,3 @@
-"""Temporal Transformer (TT): refines per-frame component tokens using true local
-(sliding-window) attention, with visibility and distance no longer mixed into one
-shared per-head bias (implementation-plan.md Sec 2.4, Sec 4). Of TT_NUM_HEADS heads,
-TT_NUM_VISIBILITY_HEADS (1) is a dedicated visibility-only head: its attention
-weights come purely from each key frame's raw visibility score, scaled by
-1/config.visibility_temperature before softmax (no QK content term, no distance
-term at all) - a fixed, non-learned attention *pattern*, though the value it
-aggregates is still a normal learned V projection. The remaining heads keep
-ordinary QK^T content attention plus a fixed (non-learned), distance-only ALiBi bias
-in place of positional embeddings - no visibility term. Splitting the two signals
-into separate heads (rather than one combined additive bias, as an earlier version
-of this module used) means a genuinely occlusion-robust attention pattern doesn't
-have to compete with content/distance terms inside the same softmax.
-
-Each query frame attends only to its own centred `window_size`-frame neighborhood
-(radius = window_size // 2 on each side, Sec 4.2) - this is enforced as genuine local
-attention, not a mask on top of dense attention: computing a full dense QK^T over
-every frame and masking out everything but the window afterward would still cost
-O(N^2), not bounding compute for long videos. Instead, each query frame's own (up
-to) `window_size` neighbor frames are gathered (`_gather_local_windows`) into a
-private key/value set, and attention is computed with a reshaped batch dimension of
-B*N (one "batch entry" per query frame, not per clip, see `TTBlock.forward`) -
-giving O(N*w) compute/memory, linear in however many frames N this is called with.
-This means:
-- Training: N is whatever clip length the dataloader provides (`max_frames` in
-  dataset_processing/config/dataloader.yaml) - a batching decision, unrelated to the
-  window itself, and typically larger than window_size.
-- Inference: an entire video (any N) can be passed in one call at batch size 1, since
-  cost no longer depends on N - avoiding both compute blow-up and the artificial
-  clip-boundary "seams" that fixed-size chunking would otherwise introduce (frames
-  only lose neighbor access at the true start/end of the video, not at arbitrary
-  chunk edges).
-
-Frames without enough real neighbors on one side (near a clip/video boundary, or next
-to clip-tail padding) simply get a smaller effective window - those slots are masked
-out as attention *keys* only (a large negative value, `_MASK_VALUE = -1e9`, so they
-get ~zero attention weight after softmax), never as queries: masking every key for a
-query row would give an all-`_MASK_VALUE` row, which - unlike an all -inf row (0/0 =
-NaN) - still softmaxes to a well-defined (uniform) distribution, since `_MASK_VALUE`
-is a large finite negative, not literal -inf. Padded-query output rows are still
-numerically valid, just meaningless; callers discard them since they don't
-correspond to a real frame.
-
-The caller also supplies each frame's actual temporal index (used only for pairwise
-distance within a window). Passing explicit frame_indices rather than assuming a
-contiguous arange(N) only actually matters once frames can be dropped/skipped within a
-window (distance between two adjacent entries would then be >1 real timestep) - out of
-scope for now per Sec 7, but a free thing to support today.
-"""
-
 from __future__ import annotations
 
 import torch
@@ -61,19 +11,6 @@ _GATE_EPSILON = 1e-8
 
 
 def _gather_local_windows(x: torch.Tensor, radius: int) -> torch.Tensor:
-    """x: (B, N, *rest) -> (B, N, w, *rest), w = 2*radius+1, where
-    output[:, i, k] = x[:, i - radius + k] for in-bounds k, and a zero-valued slot
-    otherwise. The zero pad value is never used numerically - out-of-bounds window
-    slots (video/clip boundary) are indistinguishable, by construction, from
-    clip-tail padding once `valid_mask` is gathered through this same function with
-    its own pad value forced to False, so both cases are excluded from attention by
-    the identical masking mechanism in `TemporalTransformer._compute_distance_bias`/
-    `_compute_visibility_logits`.
-
-    Implementation: zero-pad by `radius` on each side of the frame dimension, then
-    slide a width-w window across it one step at a time (`Tensor.unfold`) - this is
-    what gives every one of the N frames its own private centred neighborhood without
-    a Python-level loop over frames."""
     batch_size, num_frames, *rest = x.shape
     window_size = 2 * radius + 1
     pad = torch.zeros((batch_size, radius, *rest), dtype=x.dtype, device=x.device)
@@ -85,27 +22,6 @@ def _gather_local_windows(x: torch.Tensor, radius: int) -> torch.Tensor:
 
 
 class TTBlock(nn.Module):
-    """Pre-norm transformer block, trained from scratch (no FaRL-fidelity
-    constraint here, unlike model.encoder.SViT) - standard LayerNorm/GELU.
-    Two residual connections per block (attention, then MLP) - the usual
-    transformer-block pattern, same as model.encoder.ResidualAttentionBlock.
-
-    The attention here is cross-attention from each frame's own tokens (query) to a
-    freshly-gathered local window of tokens (key/value) - re-gathered from this
-    block's own input every call, since after each block neighboring frames' tokens
-    have also been updated (see TemporalTransformer's module docstring for why this
-    can't just be computed once up front).
-
-    Custom (not nn.MultiheadAttention) because heads are no longer uniform: the
-    num_alibi_heads QK+ALiBi heads do real content-based QK^T attention, while the
-    num_visibility_heads visibility-only head's attention weights come directly from
-    a fixed visibility-derived logit, never from Q/K at all - a single
-    nn.MultiheadAttention call has no way to give one head a different mechanism
-    than the rest. Q/K projections are sized to the alibi heads only (the visibility
-    head never needs them); V and the output projection span the full width, so
-    every head - alibi or visibility - still aggregates its own learned value
-    content, only the attention *weights* differ in how they're derived."""
-
     def __init__(self, dim: int, num_heads: int, num_visibility_heads: int, mlp_ratio: float):
         super().__init__()
         assert dim % num_heads == 0, f"dim ({dim}) must be divisible by num_heads ({num_heads})"
@@ -138,16 +54,6 @@ class TTBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, distance_bias: torch.Tensor, visibility_logits: torch.Tensor, radius: int,
     ) -> torch.Tensor:
-        """x: (B, N, C, D). distance_bias: (B, N, num_alibi_heads, C, w*C) - additive
-        ALiBi distance-only bias for the QK+ALiBi heads (added to pre-softmax QK^T/
-        sqrt(head_dim) logits), invalid key slots already masked to _MASK_VALUE.
-        visibility_logits: (B, N, C, w*C) - temperature-scaled raw-visibility
-        attention logits for the single visibility-only head (shared identically
-        across query components, since visibility is a per-key-frame quantity, not
-        per-token), invalid key slots already masked. Both come from
-        TemporalTransformer._compute_distance_bias/_compute_visibility_logits (see
-        model/temporal.py module docstring for why invalid slots are masked as keys
-        only, never queries)."""
         batch_size, num_frames, num_components, dim = x.shape
         normed = self.norm1(x)  # (B, N, C, D)
         kv = _gather_local_windows(normed, radius)  # (B, N, w, C, D)
@@ -190,25 +96,6 @@ class TTBlock(nn.Module):
 
 
 class TemporalTransformer(nn.Module):
-    """Sec 2.4: 3-layer, 8-head transformer over the 4 component tokens x N frames,
-    with each frame's attention restricted to its own centred window_size-frame
-    neighborhood (Sec 4.2) via true local attention (see module docstring). Residual
-    delta design (Sec 2.4): the final output projection is zero-initialized, so at
-    init TT(tokens) == tokens exactly (identity map); TT refines tokens, it does not
-    replace them. This is why forward() returns `residual + delta` rather than
-    `delta` alone - only one layer (output_proj) is zero-initialized (not every
-    internal block, and not TTBlock's own internal out_proj either), so
-    identity-at-init depends on this outer residual to carry the original tokens
-    through untouched until TT has learned something worth adding.
-
-    Component-type embeddings (Sec 4.4): TT has no positional embeddings at all -
-    neither the distance-only ALiBi bias nor the visibility-only head's logits vary
-    by which of the 4 tokens within a frame is being attended to, so nothing else in
-    the attention mechanism distinguishes "this is the jaw token" from "this is the
-    shape token". A dedicated learned embedding per component type gives that
-    identity signal explicitly, independent of whatever content each SViT head
-    happens to produce."""
-
     def __init__(self, config: TTConfig | None = None):
         super().__init__()
         self.config = config or TTConfig()
@@ -282,15 +169,6 @@ class TemporalTransformer(nn.Module):
         valid_mask: torch.Tensor,
         num_components: int,
     ) -> torch.Tensor:
-        """visibility_scores, valid_mask: (B, N) -> raw-visibility attention logits
-        (B, N, C, w*C) for the single visibility-only head - no distance term, no
-        mean subtraction (unlike the old combined bias's s_tilde, this head's
-        weights ARE the raw per-frame visibility score, not a deviation from it),
-        scaled by 1/config.visibility_temperature. Same key-only invalid-slot
-        masking as _compute_distance_bias - applied AFTER the temperature scaling
-        (not before), so _MASK_VALUE always stays exactly _MASK_VALUE regardless
-        of temperature, rather than being scaled into something too weak to
-        actually zero out an invalid frame's attention weight."""
         batch_size, num_frames = visibility_scores.shape
         radius = self.config.window_size // 2
         window_size = 2 * radius + 1
@@ -318,19 +196,6 @@ class TemporalTransformer(nn.Module):
         frame_indices: torch.Tensor,
         valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        tokens: (B, N, 4, D) - SViT-encoded component-token features (pre-MLP-head),
-            for N frames (any N - see module docstring for training vs. inference).
-        visibility_scores: (B, N) - raw per-frame face-visibility scores (Sec 4.1).
-            Values at invalid positions (valid_mask == False) are never used.
-        frame_indices: (B, N) - each frame's actual temporal index, used only for
-            pairwise distance within a window. Values at invalid positions are
-            never used.
-        valid_mask: (B, N) bool, True where the frame is real. Defaults to all-True
-            (no padding) if omitted.
-        Returns: (B, N, 4, D) refined tokens (tokens + zero-init-at-init delta).
-            Rows at invalid positions are numerically valid but meaningless.
-        """
         batch_size, num_frames, num_components, dim = tokens.shape
         assert num_components == constants.NUM_COMPONENT_TOKENS
         if valid_mask is None:
@@ -482,14 +347,6 @@ class SimpleTemporalTransformer(nn.Module):
         frame_indices: torch.Tensor,
         valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        tokens: (B, N, 4, D). frame_indices: (B, N) - each frame's actual temporal
-        index, used only for pairwise distance within a window. valid_mask: (B, N)
-        bool, True where the frame is real; defaults to all-True. No
-        visibility_scores argument - this design has no visibility-only head to
-        feed. Returns: (B, N, 4, D) refined tokens (tokens + zero-init-at-init
-        delta). Rows at invalid positions are numerically valid but meaningless.
-        """
         batch_size, num_frames, num_components, dim = tokens.shape
         assert num_components == constants.NUM_COMPONENT_TOKENS
         if valid_mask is None:
@@ -583,23 +440,6 @@ class GatedTTBlock(nn.Module):
 
 
 class GatedTemporalTransformer(nn.Module):
-    """Third TT design: same architecture as SimpleTemporalTransformer (all
-    num_heads heads are ordinary QK+ALiBi heads, no dedicated visibility-only
-    head) but visibility is reintroduced as a uniform post-softmax gate applied to
-    every head: gate_j = visibility_j ** gamma (raw per-frame score, Sec 4.1),
-    multiplied into each head's already-softmaxed attention weights and then
-    renormalized back into a valid distribution (GatedTTBlock.forward). Unlike
-    TemporalTransformer's dedicated visibility-only head (whose weights come
-    purely from visibility, with no content/distance term at all) or
-    SimpleTemporalTransformer (no visibility signal whatsoever), this design lets
-    visibility reshape every head's existing content+distance attention pattern -
-    redistributing weight toward more-visible frames - without competing against
-    QK/distance inside the same pre-softmax logits (which would have a sign
-    problem: those logits can be negative, so a pre-softmax visibility term could
-    weaken rather than strengthen suppression). Same residual-delta / zero-init-
-    output_proj / component-type-embedding design as the other two TT variants -
-    see TemporalTransformer's docstring."""
-
     def __init__(self, config: GatedTTConfig | None = None):
         super().__init__()
         self.config = config or GatedTTConfig()
@@ -661,18 +501,6 @@ class GatedTemporalTransformer(nn.Module):
         valid_mask: torch.Tensor,
         num_components: int,
     ) -> torch.Tensor:
-        """visibility_scores, valid_mask: (B, N) -> bounded [0, 1] multiplicative
-        gate (B, N, C, w*C), shared identically across every head and across the
-        query-component axis (visibility is a per-key-frame quantity, not
-        per-token - same convention as TemporalTransformer._compute_visibility_
-        logits). gate_j = clamp(visibility_j, 0, 1) ** gamma - clamped defensively
-        (visibility scores are a [0, 1] ratio by construction, Sec 4.1, but a
-        fractional gamma on a negative or >1 base could otherwise produce NaN/
-        values outside [0, 1]). Invalid window slots (boundary/padding) are forced
-        to exactly 0.0 - not just left to whatever a zero-padded visibility score
-        would give (0.0 ** gamma is already 0 for gamma > 0, but this stays
-        correct even for gamma == 0, where x ** 0 == 1 would otherwise leak a
-        nonzero gate at an invalid slot)."""
         batch_size, num_frames = visibility_scores.shape
         radius = self.config.window_size // 2
         window_size = 2 * radius + 1

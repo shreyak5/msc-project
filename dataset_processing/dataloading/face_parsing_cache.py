@@ -47,18 +47,6 @@ def _acquire_crop_or_sentinel(
     image_size: int,
     precomputed_crop: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | FaceParsingResult:
-    """Returns (cropped, landmarks_5pt_crop, box_crop) - either straight from
-    `precomputed_crop` or via a fresh detection - or an "unreadable"/"noface"
-    FaceParsingResult when that's not possible.
-
-    precomputed_crop: optional (cropped_image, landmarks_5pt_crop, box_crop) -
-    the exact tuple crop_face_with_landmarks would produce, for a caller that
-    already ran its own detection on this frame (e.g. inference building both
-    a model-input crop and this XSeg mask from one detection, instead of
-    detecting twice). All three fields are required, not just crop+landmarks:
-    box_crop must still be the real per-frame detected box, since it's
-    visibility_ratio's denominator - a fixed analytic box would corrupt the
-    ratio. Skips load_source_image()/get_detector() entirely when given."""
     if precomputed_crop is not None:
         return precomputed_crop
 
@@ -89,27 +77,6 @@ def compute_face_parsing(
     image_size: int,
     precomputed_crop: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> FaceParsingResult:
-    """Pure computation - no cache I/O, no sentinel writes, no callbacks.
-    Callers (get_face_parsing below, and prewarm's batched per-bucket loop)
-    translate the returned status into sentinel writes / on_noface / on_error
-    notifications and, on "ok", a bucket container write.
-
-    Caches XSeg's face-parsing mask and the "visible face region" ratio
-    (mask_area / detected-box-area, per scripts/visible_face_ratio.py) together,
-    from a single detection + single XSeg call - the mask is model/flame/
-    masking.py's missing face-region input (its own docstring flags this gap),
-    and the ratio is TemporalTransformer's visibility_scores input (Sec 4.1).
-    Both come from the same XSeg output, so computing them separately would
-    double the detector+XSeg cost for no benefit.
-
-    Builds its own crop directly (crop_face_with_landmarks, mirroring
-    mica_cache.py's own independent-alignment-crop pattern) rather than
-    reusing crop_cache's cached crop: RetinaFace inference is deterministic,
-    so this produces the pixel-identical crop crop_cache would already have -
-    the only cost difference is one extra warp_crop (cheap) versus a cache
-    read, and a fresh detection is needed either way for XSeg's landmarks
-    (crop_cache doesn't persist those). See _acquire_crop_or_sentinel for the
-    crop-acquisition details."""
     acquired = _acquire_crop_or_sentinel(load_source_image, get_detector, crop_scale, image_size, precomputed_crop)
     if isinstance(acquired, FaceParsingResult):
         return acquired
@@ -215,17 +182,6 @@ def get_face_parsing(
     on_error: Callable[[str], None] | None = None,
     precomputed_crop: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float, bool]:
-    """Orchestration layer around compute_face_parsing: sentinel check ->
-    bucket-container read (self-healing on a corrupted entry, same as
-    before) -> on a true miss, compute (unlocked, so concurrent misses on
-    the same bucket compute in parallel) -> on success, take the bucket's
-    write lock only for the final persist.
-
-    Like mica_cache.get_mica_shape, returns an explicit `valid` flag rather
-    than silently falling back to zeros: visibility_ratio is consumed as a
-    TT input (not just a rendering aid), so a missing-face fallback must be
-    distinguishable from a real 0.0 ratio, matching flag_mica_valid/
-    flag_landmarks_*_valid's established contract."""
     mask_fallback = np.zeros((image_size, image_size), dtype=np.float32)
 
     cached = _check_cache(cache_root, dataset, sample_id, frame_index)

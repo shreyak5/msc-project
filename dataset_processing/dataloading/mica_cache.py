@@ -38,18 +38,6 @@ def compute_mica_shape(
     get_mica: Callable[[], object],
     image_size: int,
 ) -> MicaShapeResult:
-    """Pure computation - no cache I/O, no sentinel writes, no callbacks.
-    Callers (get_mica_shape below, and prewarm's batched per-bucket loop)
-    translate the returned status into sentinel writes / on_noface / on_error
-    notifications and, on "ok", a bucket container write.
-
-    Mirrors crop_cache.py's compute_cropped_face, computing MICA's predicted
-    (300,) FLAME shape params instead of a cropped image. Only the shape
-    vector is returned/cached, not the intermediate ArcFace-aligned crop used
-    to produce it: that crop is consumed exactly once (by MICA's frozen
-    forward pass) and is fully reproducible from the original image +
-    detector, so persisting it would just double this cache's disk footprint
-    for something nothing else ever reads."""
     try:
         image = load_source_image()
     except Exception as exc:
@@ -86,19 +74,6 @@ def get_mica_shape(
     on_noface: Callable[[], None] | None = None,
     on_error: Callable[[str], None] | None = None,
 ) -> tuple[np.ndarray, bool]:
-    """Orchestration layer around compute_mica_shape: sentinel check ->
-    bucket-container read (self-healing on a corrupted entry, same as
-    before) -> on a true miss, compute (unlocked, so concurrent misses on
-    the same bucket compute in parallel) -> on success, take the bucket's
-    write lock only for the final persist.
-
-    Unlike get_cropped_face's silent zero-image fallback (tolerable for a
-    model *input*), this returns an explicit `valid` flag: this vector is
-    used as a loss *target* (model/losses/mica_shape.py), so a missing-face
-    fallback must be distinguishable from a real prediction, not silently
-    substituted as if it were one - the caller (datasets.py) is expected to
-    propagate this as a flag_mica_valid field, gated the same way SMIRK gates
-    its own flag_landmarks_fan."""
     fallback = np.zeros(MICA_SHAPE_DIM, dtype=np.float32)
 
     unreadable_path = sentinel_path(cache_root, dataset, sample_id, frame_index, "unreadable")

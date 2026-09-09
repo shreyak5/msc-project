@@ -1,69 +1,3 @@
-"""Expression + identity cycle consistency (implementation-plan.md Sec 6:
-"Expression cycle consistency", "Identity (β) cycle consistency"; Sec 7's
-augmentation pass).
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/smirk_trainer.py's step2(), src/utils/utils.py's load_templates(), and
-src/base_trainer.py's load_random_template(); MIT License, Copyright (c) 2024
-George Retsinas) - cross-checked against SMIRK's own paper
-(arxiv.org/abs/2404.04104) for the exact loss formula.
-
-Eq. 2 (the paper's named "Expression Consistency" loss) covers expression only:
-Lexp = ||Eψ(T(R(θ,β,ψaug) ⊕ M(I))) − ψaug||². Jaw/eyelid consistency terms are
-SMIRK's own code-level addition beyond that formula (the paper's prose only says
-augmentations "simultaneously simulate jaw and eyelid openings/closings" for
-realism, without a separate named loss for them) - expression_cycle_loss below
-follows the actual code (expression + jaw*10 + eyelid*10), which is what this
-plan's "with jaw+eyelid co-augmentation" phrasing and single outer "cycle 10"
-weight are calibrated against, not the paper's narrower written equation.
-
-The paper also confirms this plan's noted deviation for identity/shape consistency:
-"since the shape encoder Eβ is frozen [in SMIRK], the consistency loss only affects
-the optimization of the translator". This project's shape pathway isn't frozen, so
-identity_cycle_loss is meant to be applied on both alternations (encoder update and
-UNet update) - an additional encoder disentanglement signal SMIRK's own design
-couldn't use.
-
-Four augmentation types (SMIRK's own "Promoting Diverse Expressions" recipe),
-randomly assigned per-sample by splitting a batch into 4 equal groups: perturbation
-(jitter ~half the expression dims with substantial noise), permutation (within the
-group, borrow another group member's expression, intensity-scaled), template
-injection (inject a real, precomputed FaMoS-fitted expression), and zero-expression
-- plus jaw and eyelid co-augmentation applied (mildly) to every sample regardless
-of group, with the zero-expression group's jaw/eyelid then further, more
-aggressively overridden (jaw forced to exactly neutral, eyelid to fully random) -
-per the paper: "more aggressive augmentations in the zero-expression case to avoid
-incompatible blending with intense expressions". The augmentation formulas' numeric
-constants (noise scales, clamp ranges, etc.) are SMIRK's own tuned recipe,
-reproduced as-is and kept inline (not hoisted to model/constants.py) since they're
-tightly coupled to their specific formula lines, not independently meaningful
-config knobs.
-
-Template injection needs SMIRK's own precomputed FaMoS-fitted expression templates
-(assets/expression_templates_famos/, Sec 5.3) - load_expression_templates() loads
-them from disk once; sample_random_template() and the augmentation function itself
-take the loaded templates dict as a parameter rather than re-loading it internally.
-These templates only have 50 expression dims (SMIRK's own encoder config only
-ever used num_expression=50, so that's all their fitting pipeline saved), not our
-full FLAME_EXPRESSION_DIM=100 - our own indexed FaMoS data (dataset_processing/
-manifests/famos.jsonl) is larger but only has raw registered meshes, not FLAME
-parameters, so fitting our own higher-dim templates would mean building a
-mesh-to-FLAME optimization pipeline from scratch, out of scope here. Resolved by
-zeroing dims 50-99 for this augmentation type specifically (_augment_template_
-injection), rather than leaving them at their pre-augmentation value or fabricating
-nonzero data we have no basis for.
-
-Both augment_expression_cycle()'s outputs are detached: they're meant to be fixed
-targets for the cycle loss (like labels), not a differentiable path back into
-whatever produced the original expression/jaw/eyelid (the first-pass encoder
-output) - several of the augmentation formulas are linear combinations that
-include the original tensor (e.g. perturbation adds noise to `expression` itself),
-so without detaching, cycle_loss's gradient would leak into the first-pass encoder
-through the *target* side. Only the re-encoded second-pass prediction
-(recon_expression/recon_jaw/recon_eyelid, computed by the caller) should receive
-gradient from this loss.
-"""
-
 from __future__ import annotations
 
 import os
@@ -145,14 +79,6 @@ def _augment_permutation(expression: torch.Tensor) -> torch.Tensor:
 def _augment_template_injection(
     expression: torch.Tensor, templates: dict[str, np.ndarray], num_expression_params: int
 ) -> torch.Tensor:
-    """expression: (n_group, n_exp) - this group's sub-batch. Replaces each
-    sample's expression with a real, precomputed FaMoS-fitted expression template,
-    scaled by a random factor in [0.25, 1.5], plus a small extra jitter. SMIRK's
-    own templates only cover the first 50 of our 100 expression dims (SMIRK's own
-    encoder config only ever used num_expression=50) - dims beyond
-    num_expression_params are zeroed rather than left at the original
-    pre-augmentation value, so this augmented sample is a clean "template + jitter"
-    target, not a template/original hybrid."""
     n, feats_dim = expression.shape
     device = expression.device
     new_expression = torch.zeros_like(expression)
@@ -203,21 +129,6 @@ def augment_expression_cycle(
     templates: dict[str, np.ndarray],
     num_expression_params: int = constants.EXPRESSION_TEMPLATE_NUM_DIMS,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """expression: (N, n_exp), jaw: (N, 3), eyelid: (N, 2) - N is the batch size
-    for the augmentation pass (the caller decides whether/how to tile it, e.g.
-    SMIRK's own Ke-repeat scheme for multiple augmented versions per real sample;
-    this function just operates on whatever N rows it's given).
-
-    Splits the batch into 4 random equal groups, applying a different augmentation
-    type to each group's sub-batch (perturbation, permutation, template injection,
-    zero-expression - each function only sees/mixes within its own group). Then
-    applies mild jaw/eyelid co-augmentation across the FULL batch, and finally
-    overrides that mild result for the zero-expression group specifically with a
-    more aggressive one (jaw forced to exactly neutral, eyelid set to fully
-    random) - see module docstring for why.
-
-    Returns (aug_expression, aug_jaw, aug_eyelid), all detached (see module
-    docstring)."""
     n = expression.shape[0]
     device = expression.device
     group_ids = torch.randperm(n, device=device)

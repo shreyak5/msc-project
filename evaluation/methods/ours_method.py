@@ -1,19 +1,3 @@
-"""SViT [+ TT] evaluation methods.
-
-OursNoTemporalMethod evaluates a Stage-1-style checkpoint (SViT+ComponentHeads only,
-no TT) - frame-wise, matching SmirkMethod's own per-frame contract exactly.
-
-OursFullMethod evaluates a Stage-2 checkpoint (adds TT) and overrides predict_video to
-run the model's real whole-clip path (model.encoding.encode_video), the way
-inference/demo_videos.py/inference_videos.py already do.
-
-Reuses utils/inference_utils.py's model-construction/checkpoint-loading/visibility-
-scoring helpers directly rather than re-implementing them, and model/encoding.py's
-encode_image/encode_video for the actual forward passes - see this project's
-evaluation implementation plan for why this stays a live per-clip method rather than a
-two-stage inference-then-evaluate pipeline against inference/*.py's saved .npz output.
-"""
-
 from __future__ import annotations
 
 import os
@@ -203,15 +187,6 @@ def _save_cached_encoding(
 
 
 class OursKernelSmoothMethod(OursNoTemporalMethod):
-    """SViT + ComponentHeads only, no TT (exactly OursNoTemporalMethod's own model
-    path) - but predict_video kernel-smooths the decoded FLAME params
-    (utils.kernel_smoothing.smooth_encoded_params, implementation-plan.md Sec 4.4's
-    visibility-softmax formula reused as a non-learned baseline) before projection.
-    predict_frames/predict_frame (inherited, unchanged) still run the plain
-    per-frame path with no smoothing - smoothing inherently needs a clip's worth of
-    neighboring frames, so it only applies in predict_video, the same reasoning
-    OursFullMethod's own docstring gives for leaving predict_frames untouched."""
-
     FLAME_CHUNK_SIZE = 32  # same rationale as OursFullMethod
 
     def setup(

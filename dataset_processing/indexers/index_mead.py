@@ -1,19 +1,3 @@
-"""Index MEAD into the common manifest format.
-
-Raw layout: face_datasets/MEAD/<M0XX|W0XX>/video/<angle>/<emotion>/<level>/<seq>.mp4.
-
-Rather than fixing one camera angle for the whole dataset, each (subject,
-emotion, level) combination gets one angle assigned by rotating through
-whichever angles that subject actually has on disk (sorted, round-robin by
-combo index) -- so different clips of the same subject end up using
-different camera angles, but any single clip stays single-view. This also
-means subjects with an incomplete angle set (e.g. W017, which only has
-"down") aren't dropped -- they just always resolve to their one available
-angle. Frame extraction is deferred to data-load time; each row references
-the mp4 path directly. Emotion/intensity labels come from the folder
-hierarchy; gender comes from the M/W subject-id prefix.
-"""
-
 from __future__ import annotations
 
 import re

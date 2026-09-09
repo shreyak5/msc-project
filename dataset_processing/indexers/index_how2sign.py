@@ -1,24 +1,3 @@
-"""Index How2Sign into the common manifest format.
-
-Raw layout (raw mp4 clips):
-  sign_datasets/how2sign/train_rgb_front_clips/<clip>.mp4        (flat)
-  sign_datasets/how2sign/test_rgb_front_clips/<clip>.mp4         (flat)
-  sign_datasets/how2sign/val_rgb_front_clips/raw_videos/<clip>.mp4  (nested
-    one level deeper than train/test -- an extraction-layout difference, not
-    a real structural distinction; mapped to split="dev")
-
-Annotations: sign_datasets/how2sign/how2sign_{train,val,test}.csv, tab-
-delimited, columns VIDEO_ID|VIDEO_NAME|SENTENCE_ID|SENTENCE_NAME|START|END|SENTENCE.
-SENTENCE_NAME matches the clip filename stem exactly (e.g.
-"--7E2sU6zP4_10-5-rgb_front"), so annotations are joined by filename stem.
-VIDEO_ID (the 11-char youtube id) is used as subject_id -- it approximates
-"same source video/session" rather than being an official signer ID, since
-How2Sign doesn't ship one.
-
-Each row references the mp4 path directly (image_paths = [mp4_path]), frame
-extraction deferred to load time, same pattern as MEAD.
-"""
-
 from __future__ import annotations
 
 import csv

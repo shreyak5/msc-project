@@ -1,46 +1,3 @@
-"""Landmark loss + eye/mouth-closure terms (implementation-plan.md Sec 6: "L2 of
-projected 3D landmarks vs detected 2D landmarks; includes eye-closure and mouth/
-lip-closure terms (SMIRK/DECA-style)").
-
-Base landmark loss (L2/MSE, matching SMIRK's own convention) adapted from SMIRK
-(Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/smirk_trainer.py, MIT License, Copyright (c) 2024 George Retsinas) - FAN loss
-restricted to the boundary/jaw landmarks only ([:17] of the 68-point set), matching
-SMIRK's own usage and this plan's Sec 5.3 scoping of precomputed FAN data to
-"16 boundary pts".
-
-Eye-closure and lip-closure terms are NOT present anywhere in SMIRK's own codebase
-(verified via grep) - adapted from EMOCA (Danecek et al., CVPR 2022,
-https://github.com/radekd91/emoca, release/EMOCA_v2/gdl/layers/losses/
-MediaPipeLandmarkLosses.py; Software Copyright License for non-commercial
-scientific research purposes, Max Planck Institute for Intelligent Systems - same
-license family as model/flame/lbs.py; use here is non-commercial academic
-research). These compare the *distance* between paired upper/lower eyelid (or lip)
-landmarks, not absolute landmark position - a more direct signal for blink/mouth-
-open expressions than position error alone. Matches EMOCA's own L1-of-distance-
-difference formulation for these two specific terms (the base landmark loss stays
-L2/MSE, per this plan's explicit wording and SMIRK's own convention - only these
-closure terms use L1, following EMOCA/DECA's own choice for them specifically).
-Not ported: EMOCA's separate "mouth corner distance" (smile-width) term - out of
-scope, this plan only calls for eye-closure and mouth/lip-closure.
-
-MediaPipe indices: EMOCA's eye/lip landmark groups are defined in the raw 478-point
-MediaPipe Face Mesh index space, but both FLAME's own landmarks_mp output (model/
-flame/flame.py) and this project's precomputed GT MediaPipe landmarks (Sec 5.3, not
-yet implemented - see contract note below) use a curated 105-point subset, ordered
-by assets/mediapipe_landmark_embedding/mediapipe_landmark_embedding.npz's own
-landmark_indices array - verified byte-for-byte identical (including order) to
-EMOCA's own hardcoded index list, since both are the same canonical FLAME/DECA/
-EMOCA-lineage embedding asset. Raw indices are converted to positions within that
-105-point array at import time from the two source lists (see _embedded_indices),
-rather than hardcoding the already-converted result, so the derivation stays
-verifiable rather than being an opaque copied array.
-
-Precomputed GT MediaPipe landmarks contract (Sec 5.3, not yet implemented): expected
-in this SAME 105-point curated order (matching landmark_indices / FLAME's
-landmarks_mp), not the raw 478-point MediaPipe detector output.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -132,25 +89,6 @@ def _opening_distance(points: torch.Tensor, upper_idx: torch.Tensor, lower_idx: 
 
 
 def landmark_visibility_mask(face_mask: torch.Tensor, landmarks_norm: torch.Tensor) -> torch.Tensor:
-    """face_mask: (B, H, W) float, XSeg convention (1=visible face skin, 0=occluded/
-    background) - the same crop-pixel-space mask already cached per-frame (dataset_
-    processing/dataloading/face_parsing_cache.py) and used for the UNet's pixel-
-    blackout input (model/flame/masking.py). landmarks_norm: (B, N, 2), normalized
-    to [-1, 1] in (x, y) order - the same convention landmark_cache.py's _normalize
-    and FLAME's projected landmarks both use.
-
-    Returns (B, N) bool: True where that landmark's 2D position samples as visible
-    face skin (bilinear face_mask value > 0.5), False where occluded/background OR
-    projected outside the crop entirely (F.grid_sample's zero-padding treats
-    out-of-bounds as occluded - conservative, since a point outside the crop has no
-    positive evidence of visibility either).
-
-    Callers must pass GT/target landmarks here (batch_2d["landmarks_fan"/
-    "landmarks_mp"]), never a model's projected/predicted landmarks: occlusion is a
-    property of where the real facial feature actually is in this frame, not of the
-    model's current (possibly wrong, especially early in training) guess - using the
-    prediction would answer the wrong question and could let the model soften its own
-    loss just by predicting into an occluded region."""
     grid = landmarks_norm.unsqueeze(2)  # (B, N, 1, 2), grid_sample's (B, H_out, W_out, 2)
     sampled = F.grid_sample(
         face_mask.unsqueeze(1), grid, mode="bilinear", padding_mode="zeros", align_corners=False,
@@ -195,16 +133,6 @@ def _masked_pair_mean(abs_err: torch.Tensor, pair_mask: torch.Tensor | None) -> 
 def eye_closure_loss(
     predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """predicted, target: (B, 105, 2) MediaPipe landmarks -> scalar L1 loss between
-    predicted and target eyelid-opening distances (not absolute landmark position) -
-    a more direct signal for blinks than position error alone.
-
-    mask: (B, 105) bool, optional - the same per-POINT occlusion mask
-    mediapipe_landmark_loss takes (landmark_visibility_mask's output), reduced here
-    to a per-PAIR mask (upper AND lower both visible) since this loss's unit of
-    supervision is a pair's opening distance, not either point alone - a pair is
-    dropped if either landmark is occluded. None (default) reproduces the original
-    unmasked loss exactly."""
     pred_dist = _opening_distance(predicted, _UPPER_EYELID_IDX, _LOWER_EYELID_IDX)
     gt_dist = _opening_distance(target, _UPPER_EYELID_IDX, _LOWER_EYELID_IDX)
     abs_err = (pred_dist - gt_dist).abs()

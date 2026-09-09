@@ -126,21 +126,6 @@ def crop_face(image, face_detector, scale=1.4, image_size=224):
 
 
 def crop_face_with_landmarks(image, face_detector, scale=1.4, image_size=224):
-    """Like crop_face, but also returns the same detection's 5-point landmarks
-    and tight face box, both mapped into the crop's coordinate space - a
-    single detector call producing everything dataset_processing/dataloading/
-    face_parsing_cache.py needs (XSeg's face-parsing alignment requires
-    landmarks, not just a box; the visible-face-ratio ratio needs the box's
-    *actual* per-sample crop-space area, not get_cropped_face_box's fixed
-    analytic approximation, which is a constant for a given scale/image_size
-    and so carries no per-sample face-size signal). Calling crop_face and
-    get_face_landmarks separately would detect twice on the same image; this
-    mirrors the single-detection pattern scripts/visible_face_ratio.py's own
-    detect_and_crop already uses internally, as a reusable function instead of
-    a third private copy of the same logic.
-
-    Returns (cropped_image, tform, landmarks_5pt_crop (5,2), box_crop (4,)) or
-    (None, None, None, None) if no face was detected."""
     det = _detect_primary_face(image, face_detector)
     if det is None:
         return None, None, None, None
@@ -165,14 +150,5 @@ def crop_face_with_landmarks(image, face_detector, scale=1.4, image_size=224):
 
 
 def get_cropped_face_box(image_size=224, scale=1.4):
-    """The fixed box (in crop-pixel space) that the original detected face box
-    occupies within any crop_face(..., scale, image_size)-produced crop -
-    derived analytically from get_crop_transform's own geometry (which maps the
-    *scaled* box to fill the whole image_size canvas, centered on it), not
-    detected. By construction this is the same box for every crop built with
-    the same scale/image_size (ignoring the rare case where the original box
-    was clamped to the frame edge in get_crop_transform), so re-running face
-    detection on an already-cropped image just to get a box for utils.
-    landmark_utils.run_fan would be redundant."""
     margin = image_size * (1 - 1 / scale) / 2
     return np.array([margin, margin, image_size - margin, image_size - margin], dtype=np.float32)

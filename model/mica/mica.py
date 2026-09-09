@@ -1,38 +1,3 @@
-"""MICA (Metrical Identity Conditioned Face reconstruction) shape-only model
-(implementation-plan.md Sec 6d-9: MICA shape distillation, Sec 9: "Reuse from SMIRK
-repo: ... MICA integration for shape distillation").
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/models/MICA/mica.py, MIT License, Copyright (c) 2024 George Retsinas), itself
-adapting Zielon et al.'s MICA (https://github.com/Zielon/MICA). Architecture is a
-from-scratch reimplementation (model/mica/arcface.py's Arcface backbone + the
-MappingNetwork regressor below), but the actual weights loaded from
-assets/mica.tar are MICA's own pretrained checkpoint, under MICA's Max-Planck
-non-commercial research license (see https://github.com/Zielon/MICA/blob/master/
-LICENSE) - use here is non-commercial academic research, same status as the FLAME
-model assets (model/flame/flame.py).
-
-MICA predicts FLAME shape (identity) parameters directly from a single face image,
-trained with strong identity supervision (metric face-recognition embeddings) -
-used here purely as a frozen distillation target (Sec 6d-9's L2 loss against our
-own predicted shape), never fine-tuned. Only the shape regressor is used: MICA's
-own expression/pose outputs (it doesn't predict any - it's shape-only by design)
-aren't relevant here.
-
-Deviations from SMIRK's mica.py:
-- Checkpoint path is a constructor argument (model/constants.py's
-  MICA_CHECKPOINT_PATH), not hardcoded, matching this project's convention
-  elsewhere (model/flame/flame.py, model/flame/renderer.py).
-- MappingNetwork's structure/forward is reproduced unchanged (it's SMIRK/MICA's own
-  small novel module, not sourced from insightface) but simplified to drop the
-  hidden>5 deep-skip-connection branch: MICA's actual regressor always uses
-  hidden=3, so that branch is unreachable dead code here.
-- forward() returns a bare (B, 300) tensor, not SMIRK's {'shape_params': ...} dict -
-  MICA only ever predicts one thing here (shape), unlike our own FLAME/SViT-Heads
-  forward()s which bundle several named outputs; model/losses/mica_shape.py
-  consumes it directly.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

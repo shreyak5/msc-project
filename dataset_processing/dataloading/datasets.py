@@ -374,19 +374,6 @@ class VideoFaceDataset(Dataset):
 
 
 class FramePoolVideoDataset(Dataset):
-    """Treats a video dataset as a pool of individual frames rather than clips: one
-    dataset entry per video, and each access draws a freshly re-sampled random frame
-    (implementation-plan.md Sec 5.2 - used whenever TT is frozen, so video datasets can
-    mix into the same "2D-loss"/"3D-loss" image batches as real images, like SMIRK's
-    own image-level passes). Re-sampled every __getitem__ call, not fixed once per
-    video, so a long training run eventually covers most of a video's frames rather
-    than just the one frame picked at construction time.
-
-    Uses torch.randint for the frame choice - PyTorch's DataLoader automatically
-    reseeds per-worker-process RNG state (verified empirically for this environment:
-    torch, Python's stdlib random, and numpy's global RNG all diverge correctly across
-    worker processes without a custom worker_init_fn)."""
-
     def __init__(
         self,
         dataset_name: str,
@@ -516,27 +503,6 @@ def build_category_dataset(
     with_landmarks_fan_full: bool = False,
     occlusion_index: dict[str, set[int]] | None = None,
 ) -> Dataset:
-    """video_mode only affects video categories (image categories are always
-    single-frame already) - Sec 5.2: frame_pool (one re-sampled random frame per
-    access, mixable into image-shaped batches) whenever TT is frozen (Stage 1;
-    Stage 2 Pass A/B), clip (a full multi-frame window) for TT training (Stage 2
-    Pass C). A single global switch, not per-category: video datasets all switch
-    mode together based on which pass is currently running, not independently.
-
-    with_landmarks_fan_full: additive, opt-in full-68-point FAN landmarks for
-    dev-set periodic eval (training/eval_loaders.py) - only ever threaded into
-    VideoFaceDataset (clip mode); ImageFaceDataset/FramePoolVideoDataset callers
-    never need it, so it's silently ignored for those two paths.
-
-    occlusion_index: Stage2Config.pass_c_occlusion_subset_index_dir's parsed
-    contents for THIS one dataset (scripts/build_occlusion_index.py's output) -
-    {sample_id: {allowed start offsets}}. None (default) leaves the dataset
-    untouched, matching every other caller. When given, only meaningful for
-    the clip-mode VideoFaceDataset branch below - wraps the freshly-built
-    dataset in a torch.utils.data.Subset restricted to the index positions
-    whose (row.sample_id, start) is in the allow-set, same established
-    pattern training/eval_loaders.py already uses (Subset(dataset,
-    range(num_clips))) rather than changing VideoFaceDataset itself."""
     with_flame = entry.category in CATEGORIES_3D
     with_mica = entry.category in CATEGORIES_2D
     with_landmarks = entry.category in CATEGORIES_2D

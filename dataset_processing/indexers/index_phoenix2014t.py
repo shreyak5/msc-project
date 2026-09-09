@@ -1,18 +1,3 @@
-"""Index PHOENIX-2014-T into the common manifest format.
-
-Raw layout: sign_datasets/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/
-  features/fullFrame-210x260px/{train,dev,test}/<sequence>/images####.png
-  annotations/manual/PHOENIX-2014-T.{train,dev,test}.corpus.csv
-    (pipe-delimited: name|video|start|end|speaker|orth|translation)
-
-The CSV's own "video" column is a stale glob pattern ("<name>/1/*.png") that
-does not match the actual on-disk flat layout (verified -- there is no "1/"
-subfolder), so frame paths are built from "name" + globbing the sequence
-folder directly, not from that column.
-
-Each sequence is one manifest row, image_paths = ordered frame paths.
-"""
-
 from __future__ import annotations
 
 import csv

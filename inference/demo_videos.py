@@ -1,21 +1,3 @@
-"""Video demo: SViT -> TemporalTransformer -> ComponentHeads -> FLAME ->
-Renderer [-> UNet] (implementation-plan.md Sec 3, video path). Mirrors SMIRK's
-own baselines/smirk_experiments/demo_video_updated.py, but for this project's
-own model: each frame is first passed through SViT individually, then the
-WHOLE video is passed through TT in a single encode_video call - the new
-O(N*w) local-attention TemporalTransformer (model/temporal.py) was built
-precisely to support this, so no artificial clip-chunking is needed here. No
-trained checkpoint is required to run.
-
---render_no_tt additionally renders the SViT -> ComponentHeads path directly
-(model.encoding.encode_image, no TT refinement) as an extra mesh panel, for
-visually comparing TT's effect on the same clip.
-
-Usage:
-    python inference/demo_videos.py --input_path <video.mp4> [--checkpoint <path>]
-    python inference/demo_videos.py --input_path <frame_dir> --image_seq
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -119,14 +101,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def _warp_to_orig(rendered: torch.Tensor, tform, video_height: int, video_width: int) -> np.ndarray:
-    """Crop-space (1,3,H,W) render -> original-frame-space (video_height,
-    video_width,3) uint8 RGB. tform maps original-frame coords to crop-space
-    coords (preprocessing/cropping.py's get_crop_transform, same convention
-    baselines/smirk_experiments/demo_video_updated.py's own crop transform
-    uses) - passing it directly as warp()'s inverse_map places the crop-space
-    render back at its original position, exactly mirroring that script's own
-    --render_orig path. tform=None (no face detected for this frame) -> black,
-    since there's no crop position to place the render at."""
     if tform is None:
         return np.zeros((video_height, video_width, 3), dtype=np.uint8)
     rendered_np = tensor_to_uint8_rgb(rendered)

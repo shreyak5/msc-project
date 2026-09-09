@@ -29,19 +29,6 @@ def _normalize(points_xy: np.ndarray, image_size: int) -> np.ndarray:
 
 
 def _crop_has_real_face(crop_cache_root: str | Path, dataset: str, sample_id: str, frame_index: int | None) -> bool:
-    """crop_cache.get_cropped_face's return value alone can't distinguish a real
-    crop from its silent all-black fallback (no face detected / unreadable
-    source) - it has no validity flag in its contract. Its own .noface/
-    .unreadable sentinel files (written by that same call, on disk before it
-    returns) are the actual ground truth, so check those directly instead -
-    otherwise FAN/MediaPipe would run on a blank placeholder and (see run_fan's
-    docstring: it has no "no face" failure mode once given a box) silently
-    report flag_landmarks_fan_valid=True for a crop with no real face at all.
-
-    Goes through cache_utils.sentinel_path (the same helper crop_cache.py
-    itself uses) rather than reconstructing crop_cache's key path by hand, so
-    this stays correct automatically if crop_cache's own bucket/sentinel
-    layout ever changes again."""
     noface = sentinel_path(crop_cache_root, dataset, sample_id, frame_index, "noface")
     unreadable = sentinel_path(crop_cache_root, dataset, sample_id, frame_index, "unreadable")
     return not noface.exists() and not unreadable.exists()
@@ -49,15 +36,6 @@ def _crop_has_real_face(crop_cache_root: str | Path, dataset: str, sample_id: st
 
 @dataclass
 class LandmarkResult:
-    """compute_landmarks's return value. Unlike the other 3 caches, there's
-    no third "unreadable, don't persist" outcome distinct from a persistable
-    one - here "unreadable" (crop_cache.get_cropped_face itself raising, an
-    exceptional/defensive case) is the ONLY outcome that must NOT be written
-    to landmark_cache's own bucket, matching this cache's pre-existing
-    behavior of retrying on the next access rather than caching a transient
-    failure. "ok" covers both a genuine no-face crop (fields hold the
-    all-invalid fallback) and a real detection (whatever FAN/MediaPipe each
-    individually managed) - both of those DO get persisted, same as before."""
     status: Literal["ok", "unreadable"]
     landmarks_fan: np.ndarray | None = None
     flag_landmarks_fan_valid: bool | None = None
@@ -84,37 +62,6 @@ def compute_landmarks(
     image_size: int,
     include_fan_full: bool = False,
 ) -> LandmarkResult:
-    """Pure computation with respect to landmark_cache's OWN cache - no
-    landmark_cache I/O, no sentinel writes. Callers (get_landmarks below, and
-    prewarm's batched per-bucket loop) persist an "ok" result into
-    landmark_cache's own bucket container; "unreadable" is deliberately not
-    persisted (see LandmarkResult's docstring).
-
-    Still goes through crop_cache.get_cropped_face - a different cache's own
-    fully cache-integrated API, not landmark_cache's own persistence - to
-    fetch (and, on a crop_cache miss, compute) the exact same crop the main
-    model input uses (reusing crop_cache_root/crop_scale/image_size - a
-    crop_cache hit is just a cheap read, not a re-detection), not a separate
-    raw-image-space detection later warped into crop space: since that crop
-    is already a fixed, deterministic function of (dataset, sample_id,
-    frame_index) - unlike SMIRK's own per-access-randomized crop augmentation
-    - there's nothing to warp against, so landmarks computed directly on it
-    are already in the right space.
-
-    FAN needs a box but not a detector: preprocessing.cropping.
-    get_cropped_face_box(image_size, crop_scale) gives the fixed, analytically-
-    derived box the original detected face occupies within any such crop (see
-    its own docstring) - no second, redundant detector call. MediaPipe's own
-    run_mediapipe never took a detector at all (its own detect() call handles
-    that internally, opaquely).
-
-    include_fan_full: when True, additionally normalizes FAN's full 68-point
-    output (run_fan is already called for the 17-point landmarks_fan below, so
-    this reuses that same call rather than re-running FAN) into
-    landmarks_fan_full/flag_landmarks_fan_full_valid. Only
-    scripts/patch_landmark_cache_fan_full.py passes True; every other caller
-    (get_landmarks, scripts/prewarm_landmark_cache.py) leaves this False, so
-    landmarks_fan/landmarks_mp's own shape/values are completely unaffected."""
     fan_fallback = np.zeros((NUM_FAN_BOUNDARY_POINTS, 2), dtype=np.float32)
     fan_full_fallback = np.zeros((NUM_FAN_TOTAL_POINTS, 2), dtype=np.float32)
     mp_fallback = np.zeros((len(_CURATED_MEDIAPIPE_INDICES), 2), dtype=np.float32)
@@ -178,26 +125,6 @@ def get_landmarks(
     image_size: int,
     on_error: Callable[[str], None] | None = None,
 ) -> dict[str, np.ndarray | bool]:
-    """Orchestration layer around compute_landmarks: bucket-container read
-    (self-healing on a corrupted entry) -> on a true miss, compute (unlocked,
-    so concurrent misses on the same bucket compute in parallel) -> on an
-    "ok" result, take the bucket's write lock only for the final persist.
-    "unreadable" is returned to the caller but never written to this cache's
-    own bucket (see LandmarkResult's docstring) - the next access will retry
-    crop_cache rather than replay a cached transient failure.
-
-    Caches GT landmarks for the landmark loss (model/losses/landmark.py):
-    FAN's boundary/jaw-contour points ((17, 2), matching NUM_FAN_BOUNDARY_POINTS)
-    and MediaPipe's curated ((105, 2)) points, both already normalized to
-    [-1, 1] - the same crop-pixel-space FLAME's projected landmarks land in
-    (see _normalize's docstring).
-
-    Returns a dict with `landmarks_fan` (17,2), `flag_landmarks_fan_valid`,
-    `landmarks_mp` (105,2), `flag_landmarks_mp_valid` - explicit validity flags
-    (not NaN-filled arrays, despite that being evaluation/extract_landmarks.py's
-    own convention) to match this project's own established pattern for a
-    cached value used as a loss *target* (mica_cache.py's flag_mica_valid) -
-    keeps the eventual training loop's gating logic uniform across losses."""
     fan_fallback = np.zeros((NUM_FAN_BOUNDARY_POINTS, 2), dtype=np.float32)
     mp_fallback = np.zeros((len(_CURATED_MEDIAPIPE_INDICES), 2), dtype=np.float32)
 
@@ -260,21 +187,6 @@ def get_landmarks_fan_full(
     sample_id: str,
     frame_index: int | None,
 ) -> tuple[np.ndarray, bool]:
-    """Read-only accessor for the additive `landmarks_fan_full` field patched
-    into landmark_cache's existing bucket entries by
-    scripts/patch_landmark_cache_fan_full.py (full 68-point FAN, normalized to
-    [-1,1] - see that script's docstring). Unlike get_landmarks above, this has
-    NO compute-on-miss fallback: it's only ever called by the dev-set
-    periodic-eval dataloader (training/eval_loaders.py) for datasets the patch
-    script is expected to have already covered, and recomputing FAN from inside
-    a DataLoader worker on every miss would silently redo the same expensive
-    detector call every epoch rather than surfacing the gap.
-
-    Returns (landmarks_fan_full (68,2), flag_valid); a missing container,
-    missing key, corrupted entry, or a pre-patch entry without this field all
-    fall back to (zeros((68,2)), False) with a printed warning rather than
-    raising, so a partially-patched cache degrades to "no signal for this
-    frame" instead of crashing eval."""
     fallback = np.zeros((NUM_FAN_TOTAL_POINTS, 2), dtype=np.float32)
     container_path = bucket_container_path(cache_root, dataset, sample_id)
     key = entry_key(sample_id, frame_index)

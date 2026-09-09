@@ -1,26 +1,3 @@
-"""Builds Pass C's occlusion-only clip-subset index (training/config.py's
-Stage2Config.pass_c_occlusion_subset_index_dir): for each dataset, scans the
-FULL train split's cached visibility_ratio (face_parsing_cache) and, using
-the exact same windowing VideoFaceDataset itself uses (segment_starts), marks
-which (sample_id, start) clip windows contain a genuine occlusion event - see
-dataset_processing/dataloading/occlusion_index.py's
-is_window_occlusion_positive for the exact definition, which matches
-model/losses/temporal_smoothness.py's compute_vertex_gate(mode="delta_vis")
-so the training-time gate and this offline subset agree on what counts as
-"occlusion."
-
-Deliberately does NOT reuse scripts/analyze_visibility_scores.py's own
-load_video_scores: that function returns a COMPACTED per-video score list
-(gaps from uncached/no-face frames are simply skipped, not left as a hole),
-which loses the frame-index alignment this script needs to know which pairs
-of cached scores are actually temporally adjacent within a window boundary -
-so this script reads the same underlying cache directly, keyed by real frame
-index instead.
-
-Usage:
-    python scripts/build_occlusion_index.py
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -46,24 +23,6 @@ MANIFEST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def read_visibility_by_frame(
     face_parsing_cache_root: str, dataset: str, sample_id: str, num_frames_total: int,
 ) -> dict[int, float]:
-    """{frame_index: visibility_ratio} for every CACHED (detected) frame of
-    one video - a missing frame_index means that frame had no face-parsing
-    cache entry (uncached or no-face), same convention
-    scripts/analyze_visibility_scores.py's own read uses, but keyed by the
-    frame's real index instead of compacted into a plain list -
-    is_window_occlusion_positive needs real indices to tell which pairs of
-    cached scores are actually temporally adjacent.
-
-    Deliberately does NOT call utils/cache_utils.py's read_bucket_entry once
-    per frame: every frame of one video lives in the SAME bucket container
-    (one zip per (b1, b2) hash bucket, keyed by sample_id - see cache_utils.py's
-    own module docstring), but read_bucket_entry opens a fresh zipfile.ZipFile
-    (re-parsing the whole central directory) on every single call - fine for
-    its normal one-frame-at-a-time callers, but O(num_frames) redundant zip
-    opens per video here, which measured as prohibitively slow (didn't finish
-    20 videos in 2 minutes) when scanning a whole ~56k-video train split for
-    this script's purpose. Opens the container once per video instead, then
-    reads every needed entry from that one open handle."""
     container_path = bucket_container_path(face_parsing_cache_root, dataset, sample_id)
     if not container_path.exists():
         return {}

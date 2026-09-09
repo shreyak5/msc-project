@@ -122,17 +122,6 @@ def build_evaluators(method_name, device, crop_size, crop_scale=1.4, checkpoint_
 
 
 def _visible_landmark_mask(gt_xy, face_mask, gt_crop_size):
-    """gt_xy: (N, 2) GT landmarks in [0, gt_crop_size] pixel space (never predicted -
-    see landmark_visibility_mask's docstring for why). face_mask: Tensor(1, H, W) at
-    crop_size resolution, or None if visibility wasn't computed / failed this frame.
-
-    Returns (N,) bool numpy array (True = visible), or None if either input is
-    missing. Normalizing gt_xy by gt_crop_size (not face_mask's own crop_size
-    resolution) is intentional: both represent the same physical crop box, and
-    grid_sample only consumes the [-1, 1] normalized query coordinates, so the
-    resolution mismatch between gt_xy's coordinate space and face_mask's pixel
-    dimensions doesn't matter (see dataset_processing/dataloading/landmark_cache.py's
-    _normalize for the same [0, image_size] -> [-1, 1] convention)."""
     if gt_xy is None or face_mask is None:
         return None
     gt_norm = torch.from_numpy(gt_xy / gt_crop_size * 2 - 1).float().unsqueeze(0).to(face_mask.device)
@@ -140,34 +129,6 @@ def _visible_landmark_mask(gt_xy, face_mask, gt_crop_size):
 
 
 def evaluate_clip(frames, crop_scale, crop_size, evaluators, clip_id, vis_writers=None):
-    """Runs the crop -> method.predict_video -> GT detect -> per-frame error loop over one clip's frames.
-
-    clip_id: a stable string naming this clip (e.g. its basename). Forwarded to
-    predict_video() - only meaningful for methods with real temporal/visibility
-    processing (e.g. TT-based ones caching their own visibility scoring per clip);
-    ignored by methods using the default predict_video() (SMIRK, ours_no_temporal).
-
-    Returns a dict keyed by result_keys(): 'fan'/'mediapipe' arrays have one entry per
-    frame (NaN where missing). 'fan_accurate_landmark_loss'/'mediapipe_accurate_landmark_loss'
-    are the same per-frame error, but restricted to landmarks sampling as visible face
-    skin in a per-frame XSeg face-parsing mask (see _visible_landmark_mask and
-    model/losses/landmark.py's landmark_visibility_mask, the same mechanism training's
-    Pass A optionally uses) - NaN where missing OR where zero landmarks in the set are
-    visible that frame. 'temporal_smoothness' has one entry per consecutive
-    frame pair (length len(frames) - 1, NaN if either frame in the pair is missing).
-    'occlusion_temporal_smoothness' is the same per-pair vertex error, but NaN'd out
-    except on pairs whose visibility_ratio (Sec 4.1) changed by at least
-    OCCLUSION_VISIBILITY_DELTA_THRESHOLD between the two frames - vertex jitter right
-    as a frame becomes occluded/unoccluded, isolated from ordinary motion.
-
-    Landmark error is scored at evaluators.method.gt_crop_size (defaulting to crop_size
-    when a method doesn't override it - see base.py's ReconstructionMethod.gt_crop_size)
-    rather than always at crop_size, so a method whose own crop_size is dictated by its
-    pipeline's own requirements (e.g. Pixel3DMM's 512px) doesn't get an inflated raw-pixel
-    error purely from measuring in a higher-resolution coordinate space than every other
-    method - GT is detected on a crop downscaled to gt_crop_size, and predicted landmarks
-    are rescaled by gt_crop_size/crop_size before comparison.
-    """
     vis_writers = vis_writers or {}
     landmark_sets = LANDMARK_SETS if 'landmark' in METRICS else []
     track_mesh = 'temporal_smoothness' in METRICS or 'occlusion_temporal_smoothness' in METRICS

@@ -1,19 +1,3 @@
-"""Pixel3DMM evaluation method.
-
-Unlike SmirkMethod/OursFullMethod (both in-process, single forward pass per clip in this
-project's own venv), Pixel3DMM needs its own incompatible python/CUDA stack (see
-baselines/pixel3dmm_experiments/ - a separate uv-managed venv, python 3.9, torch+cu126,
-pytorch3d/nvdiffrast built from source) and is architecturally an offline, multi-stage,
-per-clip optimization (~5000 iterations) that writes to disk rather than returning a
-value from a function call. predict_video() here orchestrates that whole pipeline via
-subprocess calls into the separate venv, using the *same* RetinaFace crop eval_core.py
-already produced for every other method (see baselines/pixel3dmm_experiments/scripts/
-run_pipnet_landmarks_only.py's docstring for why Pixel3DMM's own internal cropper can be
-bypassed safely), then reads back plain .npy arrays written by the separate venv's own
-scripts/export_eval_outputs.py - this process never imports anything from the pixel3dmm
-package itself, only numpy/cv2/subprocess.
-"""
-
 import os
 import shlex
 import shutil

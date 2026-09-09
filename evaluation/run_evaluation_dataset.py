@@ -31,17 +31,6 @@ def list_clips(input_dir, image_seq):
 
 
 def load_prior_progress(results_path, skipped_path, keys):
-    """Reconstructs resume state from a previous (possibly incomplete) run's output, so a
-    shard that got killed partway through (SLURM timeout, transient failure) can resume
-    without redoing already-completed clips. Slow per-clip methods (e.g. pixel3dmm, ~8min/
-    clip) make this the difference between losing minutes vs. losing a day of GPU-hours.
-
-    Returns (done_names, per_set_means, num_skipped): done_names covers both successfully
-    processed clips (from results_path) and previously-skipped ones (from skipped_path, so
-    they aren't retried indefinitely); per_set_means is seeded from results_path's rows so
-    the eventual summary.json still reflects every completed clip, not just ones processed
-    in this particular run.
-    """
     done_names = set()
     per_set_means = {name: [] for name in keys}
     num_skipped = 0

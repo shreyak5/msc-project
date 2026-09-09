@@ -1,12 +1,3 @@
-"""Index AFEW-VA into the common manifest format.
-
-Raw layout: face_datasets/afew_va/<batch 01-12>/<video_id>/{00000.png..., <video_id>.json}.
-600 video folders total, pre-extracted frames (no raw mp4). Each video is
-indexed as a single manifest row bundling every frame via image_paths;
-per-frame valence/arousal + 68-point landmarks are stored in labels, aligned
-by list index with image_paths.
-"""
-
 from __future__ import annotations
 
 import json

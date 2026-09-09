@@ -1,39 +1,3 @@
-"""Disk-persistent caches for evaluation/eval_core.py's evaluate_clip: the
-RetinaFace crop and the GT (FAN 68pt + MediaPipe 105pt curated) landmark
-detection it currently redoes live on every call - the two biggest redundant
-costs (besides SViT, cached separately by evaluation/methods/ours_method.py's
-OursKernelSmoothMethod) across a multi-setting sweep re-evaluating the same
-clips repeatedly.
-
-Both reuse this project's existing bucket-container cache primitives
-(utils/cache_utils.py - the same ones dataset_processing/dataloading/
-{crop_cache,landmark_cache,face_parsing_cache}.py are all built from), keyed by
-(dataset, sample_id, frame_index), so warming this cache with one run makes
-every later run (any method, any sweep setting) hit it for free.
-
-Crop: wraps dataset_processing/dataloading/crop_cache.py's own get_cropped_face
-directly (pixel-identical to a live crop_face(...) call, since RetinaFace
-inference is deterministic) - not reimplemented here, just given back a
-validity check evaluate_clip's own `if cropped is None` convention needs
-(get_cropped_face itself returns a black-fallback array rather than None on a
-failed detection).
-
-GT landmarks: deliberately NOT dataset_processing/dataloading/landmark_cache.py's
-own get_landmarks - that cache stores FAN's 17-point boundary set (not the full
-68-point set evaluate_clip compares against) normalized to [-1, 1] (evaluate_clip
-needs raw [0, gt_crop_size] pixel space, matching metrics.per_frame_euclidean_error's
-direct pixel-space comparison). Reusing its public API as-is would silently
-change what evaluate_clip's landmark metrics measure and break comparability
-with every already-recorded result. This module instead caches eval_core's
-existing computation exactly as it already runs today, via two independent
-functions (get_gt_fan/get_gt_mediapipe, one cache entry each) rather than one
-combined entry - mirrors evaluate_clip's own independent `if 'fan' in
-landmark_sets` / `if 'mediapipe' in landmark_sets` guards, so a run with only
-one of the two enabled can never poison the other's cache entry with a
-permanently-missing result. Both are keyed additionally by gt_crop_size
-(method-dependent - see evaluate_clip's own docstring) since a 224px-detection
-result is not interchangeable with e.g. Pixel3DMM's own gt_crop_size."""
-
 from __future__ import annotations
 
 import io

@@ -1,25 +1,3 @@
-"""Index Headspace/LYHM into the common manifest format.
-
-FLAME-registered meshes come from the MICA-FLAME sub-package, not the raw
-Headspace scans (which are high-res, non-FLAME topology):
-  face_datasets/headspace/MICA-FLAME/LYHM/registrations/<subject_id>/<timestamp>.obj
-    (FLAME-topology mesh, 5023 verts; 1211 subjects, exactly one scan each)
-
-Images live in a separate sub-package entirely:
-  face_datasets/headspace/headspacePngTka/subjects/<subject_id>/<timestamp>/{1A,1B,1C,...,5C}.png
-    (5 physical cameras x 3 exposures each)
-
-subject_id and timestamp are shared keys across both sub-packages (verified:
-all 1211 registration subjects have a matching timestamp folder on the image
-side, with both 1C.png and 2C.png present -- 0 missing in either case), so
-matching is a direct join, no fuzzy/nearest-index logic needed.
-
-Per project decision, camera view alternates by (sorted) subject index --
-even index gets 1C, odd gets 2C -- rather than fixing one view for the whole
-dataset. Each subject has exactly one scan, so this is an image (not video)
-dataset with one row per subject.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

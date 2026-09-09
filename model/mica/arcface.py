@@ -1,19 +1,3 @@
-"""Arcface (IResNet-100) face-recognition backbone (implementation-plan.md Sec 6d-9:
-MICA shape distillation), used by model/mica/mica.py as MICA's frozen-ish feature
-extractor (layer4/bn2/fc/features stay trainable in MICA's own checkpoint; conv1/
-bn1/prelu/layer1-3 are frozen even during MICA's own training - see freezer() below).
-Not used standalone anywhere else in this project.
-
-Architecture code adapted from insightface (deepinsight/insightface,
-recognition/arcface_torch/backbones/iresnet.py; MIT License, Copyright (c) 2018
-Jiankang Deng and Jia Guo) via SMIRK's copy (georgeretsi/smirk, MIT License,
-Copyright (c) 2024 George Retsinas). Reproduced essentially unchanged (a
-from-scratch IResNet-100 definition, not itself carrying any restrictive license) -
-it's the WEIGHTS we load onto it (assets/mica.tar, from Zielon/MICA) that are
-restricted (Max-Planck non-commercial research license), not this architecture
-code.
-"""
-
 from __future__ import annotations
 
 import torch

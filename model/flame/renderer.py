@@ -1,26 +1,3 @@
-"""Differentiable mesh rasterizer/renderer (implementation-plan.md Sec 9: "Reuse from
-SMIRK repo: rasterizer ..."). Produces the grayscale-shaded mesh render fed into the
-UNet (Sec 2.5) and projects 3D landmarks to 2D for the landmark loss (Sec 6).
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/renderer/renderer.py + src/renderer/util.py, MIT License, Copyright (c) 2024
-George Retsinas). face_vertices is itself borrowed by SMIRK from
-daniilidis-group/neural_renderer (MIT License, Copyright (c) 2017 Hiroharu Kato,
-2018 Nikos Kolotouros).
-
-Uses pytorch3d (Meshes, rasterize_meshes) for the actual rasterization - a heavy
-CUDA-compiled dependency the plan doesn't otherwise mention, but required to reuse
-SMIRK's rasterizer directly rather than reimplementing it.
-
-Does not load a separate head_template.obj mesh asset (unlike SMIRK's own renderer):
-verified empirically that its face connectivity is identical to FLAME's own
-faces_tensor (model/flame/flame.py), so faces are passed in directly instead of
-loading a redundant duplicate asset. FLAME_masks.pkl (a curated vertex-region
-annotation - face/neck/ears/scalp/...) is still a genuinely separate asset, used to
-restrict rendering to the face region only (Sec 2.5/9, matching SMIRK's own
-render_full_head=False default).
-"""
-
 from __future__ import annotations
 
 import pickle
@@ -98,42 +75,12 @@ def batch_orth_proj(points: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
 
 
 def project_landmarks(points: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
-    """points: (B, N, 3) 3D points (e.g. FLAME's landmarks_fan/landmarks_mp),
-    camera: (B, 3) = [scale, tx, ty] (same convention as batch_orth_proj) ->
-    (B, N, 2) 2D-projected landmarks, Y increasing downward (image convention,
-    the reverse of FLAME's own Y-up mesh space - the source of the sign flip
-    below). Not guaranteed to land in [-1, 1] by this formula alone - scale/
-    tx/ty are themselves learned, and only converge toward the [-1, 1] range GT
-    landmarks are cached in (dataset_processing/dataloading/landmark_cache.py's
-    _normalize) as an emergent effect of training (this same camera also
-    projects FLAME's vertices for the rasterizer, which does hard-require
-    [-1, 1] NDC space, so both consumers pull the learned camera toward that
-    same range).
-
-    Factored out of Renderer.forward()'s landmark-projection loop so callers
-    that only need landmark projection (e.g. the Stage 1 pretraining loop,
-    which has no photometric loss and so never needs the full rasterizer)
-    don't have to instantiate a whole Renderer (FLAME_masks.pkl, PyTorch3D
-    rasterizer setup, ...) just to reuse this - and so this exact flip
-    convention only has one implementation to keep in sync, not two."""
     projected = batch_orth_proj(points, camera)
     projected[:, :, 1:] = -projected[:, :, 1:]
     return projected[..., :2]
 
 
 def transform_vertices(vertices: torch.Tensor, camera: torch.Tensor) -> torch.Tensor:
-    """vertices: (B, V, 3) mesh vertices (e.g. FLAME's output vertices), camera:
-    (B, 3) = [scale, tx, ty] (same convention as batch_orth_proj/project_landmarks)
-    -> (B, V, 3) camera-space vertices in the rasterizer's NDC-like space -
-    exactly what Renderer.forward() computes as transformed_vertices, factored
-    out for callers that need it without the (expensive) rasterization
-    Renderer.forward() always also performs to produce rendered_img. Used by
-    Stage 2 Pass B's cycle pass: mesh_based_mask_uniform_faces needs
-    transformed_vertices from BOTH the pre- and post-augmentation pose to
-    resample the same mesh points before/after re-posing, but only the
-    post-augmentation pose's rendered_img is ever actually fed to the UNet -
-    calling the full Renderer for the pre-augmentation pose too would rasterize
-    an image that's immediately discarded."""
     transformed_vertices = batch_orth_proj(vertices, camera)
     transformed_vertices[:, :, 1:] = -transformed_vertices[:, :, 1:]
     return transformed_vertices
@@ -196,14 +143,6 @@ class Renderer(nn.Module):
         self.register_buffer("face_colors", face_vertices(colors, faces))
 
     def forward(self, vertices: torch.Tensor, cam_params: torch.Tensor, **landmarks: torch.Tensor) -> dict:
-        """vertices: (B, 5023, 3), cam_params: (B, 3) = [scale, tx, ty] (Sec 2.2's
-        camera token, sliced at CAMERA_SCALE_SLICE + CAMERA_TRANSLATION_SLICE), and
-        any number of named 3D landmark sets (e.g. landmarks_fan=..., landmarks_mp=...
-        from model.flame.flame.FLAME's output) to project alongside the mesh.
-
-        Returns: rendered_img (B,3,H,W) grayscale-shaded mesh render, transformed_vertices
-        (B,5023,3, in the rasterizer's NDC-like space), and transformed_<key> (B,N,2)
-        2D-projected coordinates for each landmark set passed in."""
         transformed_vertices = transform_vertices(vertices, cam_params)
 
         transformed_landmarks = {

@@ -1,20 +1,3 @@
-"""Stage 1 pretraining loop (implementation-plan.md Sec 7, "Stage 1 -
-Pre-training"): stabilizes SViT (incl. position embeddings), the component
-tokens, and the MLP heads before the UNet/TT ever train against them.
-
-Single-GPU (plain `python training/pretrain.py`), single-node multi-GPU, and
-multi-node multi-GPU (`torchrun --nnodes=... --nproc_per_node=... ...`) all
-work unchanged - see training/distributed.py's setup_distributed for how
-that's detected, and slurm_jobs/pretrain.sh for the multi-node launch/
-rendezvous setup.
-
-Not built here at all (unlike Stage 2): the Renderer/rasterizer (no
-photometric loss in Stage 1), the UNet, the TT, a live MICA model, or live
-FAN/MediaPipe predictors - Stage 1's losses (landmark + MICA for 2D batches,
-mesh + Lvc for 3D batches, per Sec 7) only need SViT, ComponentHeads, and
-FLAME; MICA/landmark targets are already precomputed and cached (Sec 5.3).
-"""
-
 from __future__ import annotations
 
 import argparse

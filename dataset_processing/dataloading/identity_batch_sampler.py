@@ -22,34 +22,6 @@ def _get_subject_id(dataset: Dataset, index: int) -> str:
 
 
 class IdentityAwareBatchSampler:
-    """Batch sampler for 3D categories (implementation-plan.md Sec 6: Lvc, "swap
-    β between two same-identity samples"). Guarantees ~50% of each batch is
-    composed of same-identity pairs (batch_size // 4 distinct identities, 2
-    samples each), with the remaining half drawn via ordinary unconstrained
-    random sampling.
-
-    Doesn't communicate pairing to the loss through any special channel: every
-    dataset item already carries subject_id (ImageFaceDataset/
-    FramePoolVideoDataset's __getitem__), so the training loop can find the
-    pairs itself by grouping a batch on that field - this sampler's only job is
-    making sure matches actually exist to find, not saying which ones they are.
-
-    Wraps a DistributedSampler rather than reimplementing DDP partitioning,
-    epoch-based reshuffling, or the equal-length-across-ranks padding that
-    keeps every rank's step count matching (a hard DDP correctness requirement -
-    every rank must run the same number of all-reduce steps per epoch, or the
-    job deadlocks; see combined_loader.py's own DistributedSampler usage and
-    test_ddp_sampler_length_consistent_across_ranks) - this class only decides
-    how each rank's own already-assigned indices get grouped into batches, not
-    which indices a rank gets. Passed to DataLoader as batch_sampler=, never
-    together with sampler=/batch_size=/drop_last= (mutually exclusive in
-    DataLoader's own API, since batch_sampler already yields whole batches).
-
-    An identity (and even a specific pair) may be reused across different
-    batches within the same epoch - given 3D data scarcity (Sec 5.2), there may
-    not be enough distinct pairable identities to give every batch an entirely
-    fresh set, so this is an accepted tradeoff rather than an oversight."""
-
     def __init__(
         self,
         dataset: Dataset,

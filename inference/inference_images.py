@@ -1,12 +1,3 @@
-"""Batch image inference: SViT -> ComponentHeads -> FLAME parameters (no
-rendering) for any number of images (implementation-plan.md Sec 3, image
-path, TT skipped). See inference/demo_images.py for the single-image,
-always-renders sibling script.
-
-Usage:
-    python inference/inference_images.py --input_path <image_or_dir> [--checkpoint <path>] [--save_vertices]
-"""
-
 from __future__ import annotations
 
 import argparse

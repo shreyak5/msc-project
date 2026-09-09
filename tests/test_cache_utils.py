@@ -90,15 +90,6 @@ def test_concurrent_writers_to_different_buckets_do_not_interfere(tmp_path):
 
 
 def test_corrupted_bucket_raises_for_callers_to_self_heal(tmp_path):
-    """read_all_bucket_entries raises zipfile.BadZipFile on a truly
-    corrupted container - every cache module's own get_* wrapper is
-    responsible for catching this and treating it as a miss (see e.g.
-    face_parsing_cache.py's get_face_parsing). write_bucket_entry itself
-    tolerates it directly (see its own docstring) and rebuilds the
-    container fresh rather than propagating the corruption - this is the
-    "known accepted trade-off" from the restructuring plan: a corrupted
-    bucket loses whatever ELSE was in it, but self-heals for the entry
-    actually being requested."""
     cache_root = tmp_path / "cache"
     dataset = "test_dataset"
     sample_id = "s0"

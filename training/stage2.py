@@ -1,79 +1,3 @@
-"""Stage 2 training loop (implementation-plan.md Sec 7, "Stage 2 - SMIRK
-training + temporal training"): three alternating passes (A reconstruction,
-B augmentation/cycle, C temporal) that bring in the UNet, TT, and the
-remaining losses Stage 1 never touched.
-
-This module implements all three passes plus the outer three-pass scheduler
-(train()/main()) that round-robins between them and manages the two loaders,
-checkpointing, and DDP wiring.
-
-Pass A (Sec 7): 2D batches go through the full reconstruction path (mask ->
-sample 1% pixels -> UNet -> photometric/VGG/landmark/emotion/MICA/regularization
-losses); 3D batches get mesh + Lvc, identical to Stage 1 - reuses
-training.losses_3d.compute_3d_losses as-is rather than duplicating it. Updates
-tokens/SViT/heads/UNet; TT is frozen (simply never called in this pass, since
-Pass A operates on individual frames/images, not clips). UNet is additionally
-frozen with respect to the emotion loss only (Sec 6) - since a single combined
-backward() can't selectively exclude one loss term's gradient from one
-component while other terms in the same pass still update it, this is done as
-two separate backward() calls: the main loss (retain_graph=True, since the
-UNet's output tensor is reused by the second call), then the emotion term
-alone with the UNet's own parameters' requires_grad temporarily set to False.
-
-Pass B (Sec 7): augments the encoded expression/jaw/eyelid, re-renders +
-transfers real pixels to the augmented mesh's new projected locations, runs
-the UNet, then re-encodes the result and checks whether the encoder recovers
-the augmented target (expression cycle loss) and the original identity
-(identity cycle loss). Operates on ALL FOUR categories' images combined into
-one undifferentiated batch (Sec 7: "3D datasets contribute their 2D images,
-meshes ignored" - no 2D/3D split here, unlike Pass A). Cycles through three
-modes across consecutive Pass B calls - "encoder" ((tokens + SViT + heads)
-update, UNet frozen), "unet" (UNet updates, (tokens + SViT + heads) frozen),
-and "joint" (both update together) - per the `mode` string the caller passes
-in, itself derived from the outer scheduler's own call count and the
-configured (pass_b_encoder_steps, pass_b_unet_steps, pass_b_joint_steps) cycle
-(training/config.py). Pure "encoder"/"unet" alternation (the original
-SMIRK-style freeze, preventing the UNet from compensating for encoder errors)
-is the config default; "joint" is an added third mode, not part of SMIRK's
-original scheme. TT is frozen in every mode (never called, same reasoning as
-Pass A). Identity cycle loss is applied in every mode regardless (Sec 6: a
-deliberate deviation from SMIRK, where the shape encoder is frozen throughout
-the whole pass).
-
-Pass C (Sec 7): full SViT -> TT -> ComponentHeads pipeline on clips
-(model.encoding.encode_video) - SViT tokens can't be precomputed since SViT is
-still training in passes A/B. Only TT updates; SViT/heads/UNet are frozen
-(explicitly, at entry, same defensive requires_grad_ pattern as Pass A/B) but
-still run forward (frozen doesn't mean skipped - gradient still needs to flow
-back through their forward computation to reach TT, which is upstream of them
-in the graph, the same "frozen but not detached" pattern Pass A's emotion
-carve-out already relies on). A single combined backward suffices (unlike Pass
-A): every loss term in this pass shares the same single "only TT updates"
-gradient path, no differential freezing needed within the pass itself.
-
-2D video gets the SAME full loss set as Pass A's 2D reconstruction path
-(photometric/VGG/landmark+closure/MICA/emotion/regularization), via the exact
-same _compute_2d_reconstruction_losses_from_encoded (fed by encode_video's
-flattened (B*N,...) output instead of encode_image's (B,...), not a second
-driftable copy of the loss list) - a deliberate extension beyond Sec 7's
-literal (narrower) text, since Pass C's UNet is unconditionally frozen for
-every loss term here (unlike Pass A, where the emotion carve-out exists
-specifically because UNet is trainable for every OTHER term), so there's no
-architectural reason to exclude MICA/emotion here. 3D video gets mesh loss
-only, no Lvc (clip-mode video was already established elsewhere -
-identity_batch_sampler.py's own docstring - as not fitting the identity-
-pairing scheme). Both are additionally gated by real_frame_mask (excluding
-tail-padding, which Pass A never needed since its batches are never padded).
-
-Temporal smoothness is computed on encode_video's DECODED per-frame FLAME/
-camera params (after ComponentHeads, not on raw pre-head tokens) - directly on
-the (B,N,...) shape, before any flattening, since it needs the time axis:
-a velocity penalty, applied uniformly to expression+eyelid, jaw, camera
-scale+rotation, and shape - using the valid_mask-aware velocity_penalty
-(model/losses/temporal_smoothness.py) so a difference spanning into
-tail-padding never contaminates the loss.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -134,36 +58,6 @@ def _render_and_reconstruct(
     valid_recon: torch.Tensor,
     precomputed_flame_out: dict[str, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Shared mask -> sample 1% pixels -> UNet reconstruction path (Sec 7 Pass
-    A/C): given already-encoded FLAME params (from encode_image or, after
-    flattening, encode_video), renders the mesh, samples sparse real pixels,
-    composites the masked input, and runs the UNet. Returns (reconstructed,
-    projected_fan, projected_mp). Pass A's compute_2d_reconstruction_losses and
-    Pass C's compute_2d_video_losses both call this rather than duplicating it -
-    they differ in which losses they compute from `reconstructed`, not in how
-    it's produced.
-
-    valid_recon: (B,) bool - batch_2d["flag_face_mask_valid"]. flame/renderer
-    still run over the FULL batch (projected_fan/projected_mp are needed
-    regardless - landmark losses are gated by their own, separately-diverging
-    validity flags, not this one). But mesh_based_mask_uniform_faces/masking/
-    unet only run on valid_recon rows: an invalid row's encoded FLAME/camera
-    params are never supervised (no detected face -> no photometric/VGG/
-    emotion gradient reaches them), so they can come out numerically extreme
-    and crash mesh_based_mask_uniform_faces's torch.multinomial call - and
-    their `reconstructed` output is unused anyway, since photometric/VGG/
-    emotion losses already gate on this same flag. Non-valid rows come back
-    as zeros in `reconstructed`, never read by the gated losses.
-
-    precomputed_flame_out: occlusion-experiment1.md Change 2's FLAME-forward-once
-    optimization (run_pass_c) - when given (a dict with the same "vertices"/
-    "landmarks_fan"/"landmarks_mp" keys FLAME.forward() returns, already computed
-    on THIS SAME `encoded`, in the same row order), skips this function's own
-    flame(...) call and uses it directly - mirrors dataset_processing/dataloading/
-    face_parsing_cache.py's precomputed_crop parameter on compute_face_parsing
-    (skip recomputation when the caller already has the result). None (default,
-    every Pass A/B call site) reproduces the original always-call-flame-here
-    behavior exactly."""
     cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
 
     flame_out = (
@@ -201,69 +95,6 @@ def _compute_2d_reconstruction_losses_from_encoded(
     landmark_occlusion_masking: bool = False,
     precomputed_flame_out: dict[str, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    """The full 2D reconstruction loss set (Sec 6: photometric + VGG + landmark
-    (+closure) + MICA + emotion + regularization), given ALREADY-ENCODED FLAME
-    params - factored out of compute_2d_reconstruction_losses so Pass C's
-    compute_2d_video_losses can reuse the exact same loss-aggregation code
-    (fed by encode_video's flattened output instead of encode_image's), rather
-    than a second, driftable copy of this whole loss list. Any padding-
-    exclusion Pass C needs is the caller's job (pre-AND real_frame_mask into
-    each flag_*_valid entry of `batch_2d` before calling this) - this function
-    itself knows nothing about clip padding, only about validity flags.
-
-    Returns (loss_excluding_emotion, emotion_term, metrics) - loss_excluding_
-    emotion and emotion_term are kept as separate tensors (rather than summed
-    into one scalar) so run_pass_a can apply the UNet-frozen-for-emotion-only
-    backward carve-out described in this module's docstring (Pass C doesn't
-    need this split - UNet is unconditionally frozen there regardless of loss
-    term, so its caller just adds emotion back in before a single backward);
-    metrics still reports emotion alongside the other 2D-batch losses (Sec 6
-    lists it as a 2D-batch loss), it's just not folded into the returned loss
-    tensor.
-
-    All of photometric/VGG/emotion are gated by flag_face_mask_valid (same
-    gated_loss mechanism landmark/MICA already use): a sample with no detected
-    face has an all-zero face_mask fallback, which would make masking()'s output
-    degenerate - training the reconstruction path against that would be
-    training against garbage, not a real supervision signal, so those rows are
-    excluded the same way an invalid landmark/MICA target already would be.
-
-    photometric is currently unmasked (full-image L1) - photometric_loss
-    supports an optional face-region mask (see its own docstring), tried
-    briefly to concentrate gradient on the harder face region rather than the
-    near-free background, but reverted alongside the VGG_LOSS_WEIGHT cut: the
-    combination left the UNet's reconstruction a noisy/checkerboard mess
-    rather than the smoother (if blurry) output it produced unmasked - the
-    mask param is kept, not deleted, in case it's worth revisiting once VGG's
-    weight is back to providing enough perceptual/structural regularization
-    on its own.
-
-    occlusion_mask/occlusion_loss_weight: Pass C's synthetic-occlusion
-    upweighting only (compute_2d_video_losses) - Pass A's own call site
-    (compute_2d_reconstruction_losses) never passes these, so its behavior is
-    unchanged. When occlusion_loss_weight != 1.0, the same gated-loss
-    aggregation is evaluated a SECOND time, restricted to occlusion_mask's
-    rows, and added in at (occlusion_loss_weight - 1.0)x on top of the normal
-    1x pass every row already gets - reusing `reconstructed`/`projected_fan`/
-    `projected_mp` from the single _render_and_reconstruct call above (FLAME/
-    renderer already run over the full batch regardless of valid_recon, so
-    this needs no second render). reg_loss is deliberately excluded from this
-    upweighting - it's a global param regularizer with no per-frame validity
-    concept, not a per-frame supervision signal occlusion-weighting applies to.
-
-    landmark_occlusion_masking: occlusion-experiment1.md Change 1
-    (Stage2Config.landmark_occlusion_masking), extended by occlusion-
-    experiment1-passA.md to also cover Pass A's own call site
-    (compute_2d_reconstruction_losses), not just Pass C's - both callers read
-    the same config field. False (default) reproduces the exact original
-    unmasked landmark/closure loss. When True, per-landmark occlusion masks
-    (model/losses/landmark.py's landmark_visibility_mask, keyed off
-    batch_2d["face_mask"] + the GT/target landmarks, NOT the
-    projected/predicted ones) are computed once here and fed as each loss
-    function's new `mask` argument.
-
-    precomputed_flame_out: forwarded to _render_and_reconstruct - see its own
-    docstring."""
     valid_recon = batch_2d["flag_face_mask_valid"]
     reconstructed, projected_fan, projected_mp = _render_and_reconstruct(
         flame, renderer, unet, face_probabilities, encoded, batch_2d["pixel_values"], batch_2d["face_mask"],
@@ -341,15 +172,6 @@ def compute_2d_reconstruction_losses(
     batch_2d: dict[str, torch.Tensor],
     landmark_occlusion_masking: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    """Pass A's 2D reconstruction losses: encode_image, then the shared loss
-    aggregation - see _compute_2d_reconstruction_losses_from_encoded's own
-    docstring for the full loss list and the (loss_excluding_emotion,
-    emotion_term, metrics) return-shape rationale.
-
-    landmark_occlusion_masking: forwarded straight to
-    _compute_2d_reconstruction_losses_from_encoded - see its own docstring
-    (occlusion-experiment1-passA.md extended this from Pass-C-only to also
-    cover Pass A's landmark/closure loss)."""
     encoded = encode_image(svit, heads, batch_2d["pixel_values"])
     return _compute_2d_reconstruction_losses_from_encoded(
         flame, renderer, unet, emotion_net, vgg_loss, face_probabilities, encoded, batch_2d,
@@ -365,32 +187,6 @@ def run_pass_a(
     freeze_encoder: bool = False,
     landmark_occlusion_masking: bool = False,
 ) -> dict[str, float]:
-    """One Pass A training step: computes losses, applies the two-backward-call
-    emotion carve-out, and steps the optimizer - unlike Stage 1's compute_2d_losses/
-    compute_3d_losses (which just return a loss for a caller-level single backward),
-    this owns its own zero_grad/backward/step calls, since the emotion carve-out
-    can't be expressed as a single combined backward (see module docstring).
-
-    Explicitly sets svit/heads/unet requires_grad_ at entry rather than assuming
-    it's already the case: Pass B alternates svit/heads and unet's requires_grad
-    between calls (see run_pass_b), and requires_grad is a persistent property of
-    the nn.Module, not reset between calls - without this, a Pass A call
-    immediately following a Pass B call that happened to leave the encoder frozen
-    would silently train nothing on it that step.
-
-    freeze_encoder (Stage2Config.freeze_encoder): keeps svit/heads at
-    requires_grad_(False) even here - a UNet-warmup phase (train the
-    reconstruction pathway against a STABLE, Stage-1-converged geometry signal
-    before letting the encoder move again), not just a per-pass toggle.
-    landmark/mesh/mica/reg still get computed and logged as usual for
-    monitoring (cheap relative to the rest of the forward pass), but with
-    svit/heads frozen their backward produces no gradient anywhere - only
-    photometric/VGG/emotion (which route through unet) actually train
-    anything during this phase. unet itself is never frozen by this flag.
-
-    landmark_occlusion_masking: forwarded straight to
-    compute_2d_reconstruction_losses (Stage2Config.landmark_occlusion_masking) -
-    occlusion-experiment1-passA.md's extension of Change 1 to Pass A."""
     for p in list(svit.parameters()) + list(heads.parameters()):
         p.requires_grad_(not freeze_encoder)
     for p in unet.parameters():
@@ -481,18 +277,6 @@ def compute_cycle_losses(
     svit: SViT, heads: ComponentHeads, flame: FLAME, renderer: Renderer, unet: UNetGenerator,
     face_probabilities: torch.Tensor, templates: dict, batch: dict[str, torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Pass B's augmentation/cycle loss. batch combines ALL FOUR categories'
-    pixel_values/face_mask/flag_face_mask_valid into one undifferentiated image
-    batch (see module docstring) - there's no 2D/3D split here, unlike Pass A.
-
-    The render -> sample -> mask -> UNet chain below only runs on
-    flag_face_mask_valid rows (valid_recon), same reasoning as
-    _render_and_reconstruct: an invalid row's encoded FLAME/camera params are
-    never supervised (no detected face), so they can come out numerically
-    extreme and crash mesh_based_mask_uniform_faces's torch.multinomial call -
-    and unlike Pass A/C, nothing else in this pass needs an invalid row's
-    render output (no separate landmark loss here), so it's sliced out
-    upstream of FLAME/the renderer entirely rather than only at the very end."""
     encoded = encode_image(svit, heads, batch["pixel_values"])
     cam_for_proj = torch.cat([encoded["scale"], encoded["translation"]], dim=-1)
 
@@ -575,18 +359,6 @@ def run_pass_b(
     face_probabilities: torch.Tensor, templates: dict, optimizer: torch.optim.Optimizer,
     batch: dict[str, torch.Tensor], mode: Literal["encoder", "unet", "joint"],
 ) -> dict[str, float]:
-    """One Pass B training step. mode: "encoder" updates tokens/SViT/heads and
-    freezes UNet; "unet" updates UNet and freezes tokens/SViT/heads; "joint"
-    updates both together - the caller (outer scheduler) decides which,
-    cycling by its own Pass B call count and the configured
-    (pass_b_encoder_steps, pass_b_unet_steps, pass_b_joint_steps) pattern (see
-    module docstring). A single combined backward suffices here (unlike Pass
-    A's emotion carve-out): whichever side is frozen this call just doesn't
-    accumulate gradient, no split-backward trick needed - and "joint" needs no
-    special-casing either, since a combined backward over two fully-unfrozen
-    components is the ordinary case. Explicitly sets requires_grad_ for BOTH
-    sides every call (not just the one(s) being turned on) for the same
-    cross-pass-contamination reason documented in run_pass_a."""
     for p in list(svit.parameters()) + list(heads.parameters()):
         p.requires_grad_(mode in ("encoder", "joint"))
     for p in unet.parameters():
@@ -624,31 +396,6 @@ def compute_2d_video_losses(
     landmark_occlusion_masking: bool = False,
     precomputed_flame_out: dict[str, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Pass C's per-frame 2D-video losses - the SAME loss set as Pass A
-    (_compute_2d_reconstruction_losses_from_encoded), just fed by encode_video's
-    flattened output instead of encode_image's, and with real_frame_mask
-    (real frame vs. tail padding) pre-ANDed into every flag_*_valid field
-    before calling the shared function, so padded frames never contribute to
-    any of these losses (Pass A never needed this - its batches are never
-    padded).
-
-    occlusion_mask: (B, N) bool, optional - run_pass_c's synthetic-occlusion
-    mask (see model/encoding.py's _fill_missing_frame_tokens and
-    training/config.py's pass_c_synthetic_occlusion_enabled). Flattened the
-    same way as every other per-frame field, then handed to
-    _compute_2d_reconstruction_losses_from_encoded to upweight those frames'
-    contribution to the loss by occlusion_loss_weight.
-
-    landmark_occlusion_masking/precomputed_flame_out: forwarded straight to
-    _compute_2d_reconstruction_losses_from_encoded (occlusion-experiment1.md's
-    Change 1 / the FLAME-once optimization). precomputed_flame_out must already
-    be flattened to (B*N, ...) - the SAME flatten this function does internally
-    to encoded/batch_2d_video below (via _flatten, a pure deterministic
-    reshape) - so row i of precomputed_flame_out lines up with row i of this
-    function's own encoded_flat/batch_flat as long as the caller built it from
-    the identical (B, N, ...) `encoded` this function also received. run_pass_c
-    is the only caller that passes this; guaranteed by construction there (see
-    its own docstring)."""
     batch_size, num_frames = real_frame_mask.shape
     encoded_flat = {k: _flatten(v, batch_size, num_frames) for k, v in encoded.items()}
     batch_flat = {k: _flatten(v, batch_size, num_frames) for k, v in batch_2d_video.items()}
@@ -685,42 +432,6 @@ def compute_temporal_smoothness_losses(
     temporal_vertex_smoothness_weight: float = 0.0,
     temporal_velocity_weight: float = constants.TEMPORAL_VELOCITY_WEIGHT,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Sec 6: velocity penalty (L2, discourages frame-to-frame jumps) applied
-    uniformly to expression+eyelid, jaw, camera scale+rotation, and shape.
-    Computed on encode_video's DECODED per-frame params directly ((B,N,...),
-    before any flattening - needs the time axis to diff across), using the
-    valid_mask-aware velocity_penalty (model/losses/temporal_smoothness.py) so
-    a difference spanning into tail-padding never contaminates the loss.
-
-    temporal_velocity_weight: Stage2Config.temporal_velocity_weight_in_pass_c -
-    overrides constants.TEMPORAL_VELOCITY_WEIGHT for this call only, so a Pass C
-    experiment YAML can tune it without changing the shared module-level
-    constant (which every other TEMPORAL_VELOCITY_WEIGHT reference elsewhere
-    would otherwise also pick up). Defaults to the constant itself, reproducing
-    the exact original behavior for every caller that doesn't override it.
-
-    occlusion_mask: (B, N) bool, optional - run_pass_c's synthetic-occlusion
-    mask. Converted to a (B, N) float frame_weight (occlusion_loss_weight at
-    occluded positions, 1.0 elsewhere) and passed to velocity_penalty, which
-    upweights any velocity term touching an occluded frame - exactly the
-    frame-to-frame transition TT had to bridge using temporal context alone.
-
-    param_smoothness_enabled: Stage2Config.param_smoothness_in_pass_c - gates the
-    EXISTING param-space velocity term (expr/jaw/camera/shape) on/off; True
-    (default) reproduces the original always-on behavior for every caller that
-    doesn't pass this - occlusion-experiment1.md's Change 2 spec: "keep it
-    implemented ..., but disable it in Pass C for this experiment (config-flag
-    it off, don't delete)".
-
-    vertices/base_region_weights/gated_region_mask/gate/
-    expressive_region_smooth_weight/temporal_vertex_smoothness_weight: Change 2's
-    new vertex-space, region-weighted, visibility-gated temporal smoothness term
-    (model/losses/temporal_smoothness.py's vertex_velocity_penalty). `vertices`:
-    (B, N, V, 3), required whenever temporal_vertex_smoothness_weight > 0 (raises
-    AssertionError otherwise, along with base_region_weights/gated_region_mask/
-    gate). temporal_vertex_smoothness_weight=0.0 (default) skips this term
-    entirely - reproduces the exact old behavior (no vertex-space term at all)
-    for every existing caller."""
     total = torch.zeros((), device=real_frame_mask.device)
     metrics: dict[str, float] = {}
 
@@ -783,75 +494,6 @@ def run_pass_c(
     vertex_gate_delta_beta: float = 1.0,
     temporal_velocity_weight_in_pass_c: float = constants.TEMPORAL_VELOCITY_WEIGHT,
 ) -> dict[str, float]:
-    """One Pass C training step. Only TT updates - svit/heads/unet are
-    explicitly frozen at entry (same defensive requires_grad_ pattern as Pass
-    A/B), but still run forward (see module docstring: frozen doesn't mean
-    skipped, gradient still flows through them to reach TT).
-
-    2d_video only - there is no 3d_video category to encode/loss against
-    (CoMA/VOCASET moved to 3d_image, since their visibility scores are
-    unreliable for TT's windowed attention; see dataset_processing/
-    dataloading/datasets.py and the indexers' own docstrings), so this
-    simplifies to the ordinary single-category case: one encode_video call,
-    temporal-smoothness loss computed directly on its output (no
-    cross-category concatenation needed - an earlier version of this function
-    combined a 2d_video and a 3d_video encode_video call specifically to keep
-    their heavy reconstruction graphs from being resident simultaneously,
-    which no longer applies with only one category).
-
-    synthetic_occlusion_enabled/_prob/occlusion_loss_weight: training/
-    config.py's pass_c_synthetic_occlusion_* fields. When enabled, some real,
-    currently-visible frames (valid_mask & flag_visibility_valid) are chosen
-    independently at random (Bernoulli(synthetic_occlusion_prob) per eligible
-    frame) and pretended-occluded for encode_video's input only: their
-    flag_visibility_valid is flipped to False (routing them through
-    encode_video's existing _fill_missing_frame_tokens neighbor-averaging,
-    model/encoding.py) and their visibility_ratio fed to TT is zeroed.
-    batch_2d_video's own tensors are never mutated - the real, uncorrupted
-    targets/flags are what the loss calls below still see, so supervision is
-    against genuine ground truth. The resulting occlusion_mask is passed to
-    both loss functions to upweight those frames by occlusion_loss_weight.
-
-    landmark_occlusion_masking/base_region_weights/gated_region_mask/
-    expressive_region_smooth_weight/temporal_vertex_smoothness_weight/
-    param_smoothness_in_pass_c/mouth_gate_use_region_visibility:
-    occlusion-experiment1.md's Change 1/Change 2. base_region_weights/
-    gated_region_mask are training/stage2.py::train()'s once-built
-    model/losses/mesh.py::build_gated_expressive_region_weights() output.
-
-    identity_pooling: Stage2Config.pass_c_identity_pooling - forwarded straight
-    to encode_video's own pool_identity param (model/encoding.py). False
-    (default) reproduces the original per-frame shape behavior exactly. See
-    stage2-config-reference.md for the full rationale.
-
-    vertex_gate_mode/vertex_gate_delta_cap/vertex_gate_delta_beta:
-    Stage2Config fields of the same name, forwarded straight to
-    model/losses/temporal_smoothness.py's compute_vertex_gate (see its own
-    docstring for the two modes' formulas). vertex_gate_mode="min_vis"
-    (default) reproduces the original inline gate formula exactly; cap/beta
-    only affect "delta_vis" mode.
-
-    temporal_velocity_weight_in_pass_c: Stage2Config field of the same name -
-    forwarded straight to compute_temporal_smoothness_losses' own
-    temporal_velocity_weight param, overriding constants.TEMPORAL_VELOCITY_WEIGHT
-    for the param-space velocity term (vel_expr/vel_jaw/vel_camera/vel_shape)
-    in this Pass C call only. Defaults to the constant itself, reproducing the
-    exact original behavior for every existing YAML.
-
-    RESTRUCTURED FLAME flow: FLAME's forward (cheap - LBS + landmark
-    regression, no UNet/VGG/renderer rasterization) now runs exactly ONCE, on
-    the flattened encode_video output, BEFORE either backward call -
-    previously it ran once, but only inside _render_and_reconstruct, i.e.
-    after the temporal-smoothness backward had already completed. It's needed
-    earlier now because Change 2's vertex-space term needs real FLAME
-    vertices. The resulting flame_out is reused (not recomputed) by
-    compute_2d_video_losses's own reconstruction path via the
-    precomputed_flame_out parameter - FLAME never runs twice. retain_graph=
-    True on the temporal-loss backward (unchanged) now also keeps flame_out's
-    own (cheap) graph alive for compute_2d_video_losses' later backward - this
-    doesn't reintroduce the heavy-graph-residency problem the original
-    two-backward split was avoiding (that was about UNet/VGG activations, not
-    FLAME's own lightweight forward)."""
     for p in list(svit.parameters()) + list(heads.parameters()) + list(unet.parameters()):
         p.requires_grad_(False)
     for p in tt.parameters():
@@ -942,27 +584,6 @@ def run_periodic_eval_local(
     eval_loaders: dict[str, DataLoader], device: str,
     pool_identity: bool = False,
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Runs THIS RANK'S OWN SHARD of the fixed dev-clip subset (training/
-    eval_loaders.py's build_eval_loaders shards it across every rank via
-    DistributedSampler) through the same encode_video -> flame -> renderer
-    forward path run_pass_c's _encode_category/_render_and_reconstruct use -
-    but stops at the projected landmarks/vertices, skipping the UNet/masking/
-    photometric portion entirely (not needed for landmark/temporal-smoothness
-    scoring). flame_out["landmarks_fan"] is already FLAME's full 68-point set
-    (the [:17] boundary-only slicing only happens in the training LOSS
-    functions, not in FLAME/the renderer), so it compares directly against the
-    landmarks_fan_full cache field with no extra projection work.
-
-    pool_identity: forwarded straight to encode_video's own pool_identity param
-    - should match whatever run_pass_c was called with (Stage2Config.
-    pass_c_identity_pooling) so this eval's temporal_smoothness metric reflects
-    the same behavior training is actually optimizing. False (default)
-    reproduces the original per-frame shape behavior exactly.
-
-    Returns RAW, unsummarized per-frame(-pair) error arrays per dataset -
-    aggregation across ranks happens separately in
-    aggregate_and_print_eval_results, since combining already-summarized
-    per-rank statistics (e.g. averaging medians) isn't valid."""
     svit, tt, heads = unwrap_model(svit), unwrap_model(tt), unwrap_model(heads)
 
     results: dict[str, dict[str, np.ndarray]] = {}
@@ -1032,16 +653,6 @@ def run_periodic_eval_local(
 def aggregate_and_print_eval_results(
     local_results: dict[str, dict[str, np.ndarray]], rank: int, world_size: int, step: int,
 ) -> None:
-    """Combines every rank's raw per-frame error arrays (run_periodic_eval_local)
-    into one pooled evaluation/metrics.py summarize() per dataset/metric,
-    printed only on rank 0. A single dist.gather_object collective - every rank
-    reaches this at the same `step` (the training loop is lockstep-synchronized
-    across ranks: `step` is the same loop variable on every rank), so this is a
-    bounded, ordinary collective, not a stall.
-
-    Combining RAW arrays (not each rank's own already-summarized mean/median/
-    std) is required for correctness: those can't be recombined into the
-    correct pooled statistic after the fact, especially the median."""
     if is_distributed():
         gathered: list[dict[str, dict[str, np.ndarray]]] | None = [None] * world_size if rank == 0 else None
         dist.gather_object(local_results, gathered, dst=0)
@@ -1066,19 +677,6 @@ def aggregate_and_print_eval_results(
 
 
 def train(cfg: Stage2Config, checkpoint_pth: str | None = None) -> None:
-    """The outer three-pass scheduler: round-robins through cfg.pass_pattern
-    (default ["A","B","C"]), drawing batches from one of two independently-
-    cycling loaders (frame_pool for Pass A/B, clip for Pass C - see module
-    docstring) via training.loss_utils.next_batch, which restarts each loader
-    on exhaustion rather than stopping (there's no single "epoch" spanning
-    both loaders, since they're drawn from at different relative rates under
-    round-robin - see training/config.py's Stage2Config docstring).
-
-    Also ramps the optimizer's LR linearly over cfg.warmup_steps at the top
-    of the loop (see Stage2Config.warmup_steps' own docstring for why) -
-    computed fresh from `step` every iteration rather than a stateful
-    scheduler, so it's automatically correct across resumes with no extra
-    checkpoint bookkeeping."""
     torch.manual_seed(cfg.seed)
     rank, world_size, local_rank, device = setup_distributed(fallback_device=cfg.device)
     if is_main_process(rank):

@@ -1,19 +1,3 @@
-"""Neural rendering UNet (implementation-plan.md Sec 2.5): an image-to-image
-translator that takes the rendered mesh geometry + a sparse sample of real face
-pixels and reconstructs a full RGB face image, trained from scratch.
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk) -
-specifically src/smirk_generator.py's SmirkGenerator and ResnetBlock - per the plan's
-instruction to reuse SMIRK's UNet directly rather than reimplement it. This is a
-copied/adapted file, not an import from baselines/smirk_experiments.
-
-Architecture unchanged from SMIRK: a 4-level UNet (encoder/decoder with skip
-connections - required for gradient flow to the encoder, per Sec 2.5) with a
-ResNet-block bottleneck, final sigmoid output. Configured to match SMIRK's actual
-trainer instantiation (in_channels=6, out_channels=3, init_features=32,
-res_blocks=5 - see model/constants.py), not SmirkGenerator's own class defaults.
-"""
-
 from __future__ import annotations
 
 from collections import OrderedDict

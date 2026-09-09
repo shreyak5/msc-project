@@ -43,14 +43,6 @@ def build_fan_predictor(device, model_name='2dfan4'):
 
 
 def run_fan(fan_predictor, image, box):
-    """box: (4,) [left, top, right, bottom] - the face's box within `image`. No
-    face_detector here: callers operating on an already-cropped image (via
-    preprocessing.cropping.crop_face) should pass preprocessing.cropping.
-    get_cropped_face_box(image_size, scale)'s fixed, analytically-derived box
-    rather than re-detecting - see that function's docstring for why re-
-    detection would be redundant. FAN itself has no "no face" failure mode
-    once given a box (unlike the old detector-based version) - it will always
-    attempt to produce landmarks for whatever box it's given."""
     import numpy as np
     landmarks, scores = fan_predictor(image, np.asarray(box), rgb=False)
     if len(landmarks) == 0:

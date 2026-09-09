@@ -1,12 +1,3 @@
-"""Per-token MLP heads mapping 768-dim component-token features to FLAME/camera
-parameters (implementation-plan.md Sec 2.2, 2.3).
-
-Kept separate from model.encoder.SViT because the same heads are reused by two
-different flows (Sec 3):
-  - single image:  SViT -> ComponentHeads
-  - video/clip:    SViT -> TemporalTransformer -> ComponentHeads
-"""
-
 from __future__ import annotations
 
 import torch

@@ -1,21 +1,3 @@
-"""Batch video inference: SViT -> TemporalTransformer -> ComponentHeads ->
-FLAME parameters (no rendering) for any number of videos (implementation-
-plan.md Sec 3, video path). See inference/demo_videos.py for the
-single-video, always-renders sibling script.
-
-Multiple videos are batched together along the batch dimension B (never
-concatenated along the frame dimension N) - TemporalTransformer's local-window
-attention (model/temporal.py) keeps B as a separate, un-merged axis throughout,
-so frames from different videos in the same batch structurally cannot attend
-to each other regardless of window size or padding. Videos of different
-lengths within a batch are padded to a common frame count using this
-project's own dataset_processing/dataloading/video_frames.py helpers (the
-same ones training uses), each carrying its own real_frame_mask.
-
-Usage:
-    python inference/inference_videos.py --input_path <dir_of_videos> [--checkpoint <path>] [--save_vertices]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -164,15 +146,6 @@ def process_video_group(video_paths_group: list[str], executor, args: argparse.N
 
 
 def pad_video(video: dict, max_frames: int) -> dict:
-    """Pads one video's per-frame lists to max_frames using this project's own
-    frame_indices_for_segment/valid_mask_for_segment (start=0, since the whole
-    video is one segment here, not a training-style sub-clip) - the same
-    tail-repeat padding scheme training already relies on. `frame_indices` are
-    the actual (repeated-at-the-tail) source frame numbers, matching how
-    dataset_processing/dataloading/datasets.py itself feeds TT, not a plain
-    arange - only distance between frame_indices matters (TT's docstring), so
-    this is equivalent, but keeping it consistent with training avoids a
-    silent behavioral difference."""
     num_frames = video["num_frames"]
     source_indices = frame_indices_for_segment(0, max_frames, num_frames)
     real_frame_mask = valid_mask_for_segment(0, max_frames, num_frames)

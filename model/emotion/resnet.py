@@ -1,37 +1,3 @@
-"""ResNet-50 (Bottleneck) backbone, EMOCA's "emoca_specific" stride/maxpool
-variant, used by model/emotion/emotion_net.py as a frozen emotion-feature
-extractor (implementation-plan.md Sec 6d-10: emotion loss).
-
-Architecture code adapted from EMOCA (Daniel et al., github.com/radekd91/emoca,
-gdl/layers/losses/EmoNetLoss.py's ResNet) via SMIRK's copy
-(src/losses/resnet.py, no explicit license header of its own) - EMOCA's own
-backbone architecture in turn traces to the ResNet-50 reimplementation in
-cydonia999/VGGFace2-pytorch (MIT License), which EMOCA modified with the
-"emoca_specific" stride-placement (stride moved from conv1 to conv2 in each
-Bottleneck block - a ResNet-v1.5-style change) and maxpool padding change. As
-with model/mica/arcface.py: this architecture code traces to a permissively
-licensed reimplementation, but the actual pretrained checkpoint we load
-(assets/ResNet50/checkpoints/...) is EMOCA/DECA's own, under the Max-Planck
-non-commercial research license explicitly stated in SMIRK's copy of
-ExpressionLoss.py (Copyright 2019 Max-Planck-Gesellschaft, deca@tue.mpg.de) - use
-here is non-commercial academic research, same status as the FLAME (model/flame/
-flame.py) and MICA (model/mica/mica.py) assets.
-
-Simplified from SMIRK's resnet.py:
-- Only the emoca_specific=True code path is kept (SMIRK's ExpressionLoss always
-  constructs it that way) - the alternate stride/maxpool branch is dropped as
-  unreachable.
-- Only the "include_top=False" path is kept: no `fc` classification head is
-  defined at all (SMIRK's copy still instantiates one as dead weight, deleting
-  it from the checkpoint before a strict=False load; we just never define it and
-  load strict=True against a checkpoint dict pre-filtered to backbone.* keys -
-  see model/emotion/emotion_net.py).
-- Dropped the random Conv2d/BatchNorm2d weight-init loop and the standalone
-  Caffe-pickle load_state_dict() utility (both were only ever used to initialize/
-  load the *pre-EMOCA-finetuning* VGGFace2 backbone - irrelevant once loading
-  EMOCA's own already-finetuned final checkpoint directly, as we do here).
-"""
-
 from __future__ import annotations
 
 import torch

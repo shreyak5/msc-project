@@ -1,16 +1,3 @@
-"""Index CSL-Daily into the common manifest format.
-
-Raw layout: sign_datasets/csl-daily/{train,dev,test}/<name>/<frame>.jpg
-(pre-extracted frame sequences, one folder per sentence clip) -- the split is
-taken directly from which of the three folders a clip lives in, rather than
-cross-referencing split_1.txt. Annotations come from
-sign_datasets/csl-daily/csl2020ct_v1.pkl: info is a list of dicts keyed by
-name with length, label_gloss/label_char/label_word, signer id, and time
-(repeat-performance index).
-
-Each clip is one manifest row, image_paths = ordered frame paths for that clip.
-"""
-
 from __future__ import annotations
 
 import pickle

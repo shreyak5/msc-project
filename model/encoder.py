@@ -1,19 +1,3 @@
-"""Spatial ViT (SViT) encoder: TokenFace-style (Zhang et al., ICCV 2023) tokenized
-ViT-B/16 with learnable per-parameter-group component tokens appended to the
-image patch tokens (implementation-plan.md Sec 2.1-2.3).
-
-Some transformer-block internals below are adapted from FaRL-B's ViT-B/16
-(Zheng et al., CVPR 2022, https://github.com/FacePerceiver/FaRL, MIT License,
-Copyright (c) Microsoft Corporation) - specifically farl/network/farl/model.py -
-rather than a generic timm ViT, so that the official FaRL checkpoint loads with
-an exact 1:1 key/shape mapping (see model/farl_weights.py). Each adapted class
-is marked below; this file is not vendored/imported from that repo.
-
-Device/parallelism note: this module is plain nn.Module code with no device or
-distributed-training assumptions baked in - DistributedDataParallel wrapping and
-device placement happen in the training scripts (Sec 7), not here.
-"""
-
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -88,15 +72,6 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class SViT(nn.Module):
-    """ViT-B/16 spatial encoder with 4 learnable component tokens appended to the
-    patch token sequence. Only the component tokens' post-final-layer features are
-    returned; image patch tokens are discarded (TokenFace design, Sec 2.1).
-
-    Returns raw 768-dim features, not decoded FLAME/camera parameters: the per-token
-    MLP heads (model.heads.ComponentHeads) are a separate module, shared by both the
-    single-image path (SViT -> Heads) and the video path (SViT -> TT -> Heads, Sec 3),
-    so they aren't owned by SViT itself."""
-
     def __init__(self, config: SViTConfig | None = None):
         super().__init__()
         self.config = config or SViTConfig()

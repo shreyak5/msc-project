@@ -1,29 +1,3 @@
-"""Sparse face-pixel masking + pixel-transfer (implementation-plan.md Sec 2.5, Sec 9:
-"Reuse from SMIRK repo: masking + pixel sampling, pixel transfer").
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/utils/masking.py, MIT License, Copyright (c) 2024 George Retsinas).
-
-Excludes point2ind: verified (via grep) unused anywhere in SMIRK's own codebase.
-
-Two-layer masking, both present in SMIRK's actual default behavior (preserved as-is):
-  1. `mesh_based_mask_uniform_faces` picks WHICH mesh-surface points are eligible to
-     be retained pixels in the first place (~mask_ratio of image area, weighted away
-     from regions that would leak expression info - e.g. lips/nose sampled at half
-     rate, neck/ears/eyeballs never sampled - and toward front-facing, visually large
-     triangles).
-  2. `masking`'s own `random_mask` parameter (also defaulting to ~1%, but a *separate*
-     mechanism) then further drops out random 11x11-pixel patches from among those
-     already-sparse points. SMIRK's own trainer never overrides this, so the actual
-     retained-pixel density ends up somewhat below the nominal mask_ratio.
-
-Note: `mask` (the face-region indicator passed into `masking()`) is NOT computed by
-this module - in SMIRK it comes from the dataset itself (a precomputed convex-hull-
-of-landmarks mask). This project's data pipeline doesn't produce that yet (Sec 5.3's
-preprocessing list doesn't currently include it) - wiring that up is separate,
-pending work for when the reconstruction-pass training loop is built (Sec 7).
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -84,18 +58,6 @@ def mesh_based_mask_uniform_faces(
     coords: dict[str, torch.Tensor] | None = None,
     image_size: int = constants.RENDERER_IMAGE_SIZE,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Samples ~mask_ratio*image_size^2 points from the FLAME mesh surface, biased by
-    face_probabilities and each triangle's visible (front-facing, xy-projected) area.
-
-    flame_trans_verts: (B, V, 3) camera-space vertices (e.g. renderer's
-    transformed_vertices). flame_faces: (F, 3). face_probabilities: (F,) from
-    load_probabilities_per_flame_triangle. coords: reuse a previous call's exact
-    sampled triangles/barycentric coords (e.g. to resample after the mesh has been
-    re-posed by an augmentation, for pixel-transfer - see transfer_pixels) instead of
-    drawing new ones.
-
-    Returns (npoints (B, mask_ratio*image_size^2, 3) pixel coords - integer, clamped
-    to the image - and the raw sampling info dict for reuse via `coords`)."""
     batch_size = flame_trans_verts.size(0)
     device = flame_trans_verts.device
     num_points_to_sample = int(mask_ratio * image_size * image_size)

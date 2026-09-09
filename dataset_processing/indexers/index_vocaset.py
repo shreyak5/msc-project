@@ -1,26 +1,3 @@
-"""Index VOCASET into the common manifest format.
-
-Raw layout: face_datasets/vocaset/FaceTalk_<date>_<id>_TA/sentenceNN/sentenceNN.NNNNNN.ply
-(FLAME-topology mesh, 5023 verts, same 12 subjects as CoMA) paired with
-face_datasets/vocaset/vocaset_images/imagessubject<N>/FaceTalk_.../sentenceNN/sentenceNN.NNNNNN.26_C.jpg
-(N = 1-indexed position of the subject folder in sorted order; note the
-"imagessubject" directory name has a double s, unlike CoMA's "imagesubject").
-Camera 26_C is used exclusively, per project decision.
-
-Verified across all 480 subject/sentence combinations that every mesh frame
-has a matching 26_C image at the same index (0 mismatches out of 123710 mesh
-frames), same as CoMA.
-
-Indexed as an IMAGE dataset (one row per frame), not bundled into per-sentence
-video rows, for the same reason as CoMA (see index_coma.py's docstring): VOCASET
-is the same kind of controlled studio 4D-scan capture (painted mocap markers,
-skull cap, extreme close-up framing), which the RetinaFace/XSeg face-visibility
-pipeline is domain-mismatched on - so treating it as ordinary video would feed
-TemporalTransformer's visibility-driven windowed attention an unreliable signal.
-Every frame becomes an independent 3D-image sample instead (same layout as
-FaMoS); full FLAME mesh supervision is unaffected.
-"""
-
 from __future__ import annotations
 
 import re

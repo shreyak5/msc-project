@@ -1,29 +1,3 @@
-"""Index CoMA into the common manifest format.
-
-Raw layout: face_datasets/COMA/FaceTalk_<date>_<id>_TA/<expression>/<expression>.NNNNNN.ply
-(FLAME-topology mesh, 5023 verts) paired with
-face_datasets/COMA/coma_images/imagesubject<N>/FaceTalk_.../<expression>/<expression>.NNNNNN.26_C.jpg
-(N = 1-indexed position of the subject folder in sorted order). Camera 26_C
-is used exclusively, per project decision.
-
-Mesh and image capture rates differ (images were captured at a higher rate
-than meshes were registered), so pairing is done by exact frame-index string
-match rather than position. Verified across all 144 subject/expression
-combinations that every mesh frame has a matching 26_C image at the same
-index (0 mismatches out of 20465 mesh frames).
-
-Indexed as an IMAGE dataset (one row per frame), not bundled into per-expression
-video rows despite the underlying capture being temporally continuous: CoMA is a
-controlled studio 4D-scan capture (painted mocap markers, skull cap, extreme
-close-up framing) that the RetinaFace/XSeg face-visibility pipeline
-(dataset_processing/dataloading/face_parsing_cache.py) is domain-mismatched on, so
-feeding it through TemporalTransformer's visibility-driven windowed attention as
-ordinary video would train on an unreliable signal. Treating every frame as an
-independent 3D-image sample (same layout as FaMoS) sidesteps that entirely - full
-FLAME mesh supervision is unaffected, only the temporal/video framing is dropped.
-Extra trailing image frames with no corresponding mesh are excluded.
-"""
-
 from __future__ import annotations
 
 import re

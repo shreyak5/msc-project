@@ -1,36 +1,3 @@
-"""EMOCA's emotion-recognition network (implementation-plan.md Sec 6d-10: emotion
-loss; Sec 9: "Reuse from SMIRK repo: ... emotion network").
-
-Adapted from SMIRK (Retsinas et al., CVPR 2024, https://github.com/georgeretsi/smirk,
-src/losses/ExpressionLoss.py; that file's own header: "Code borrowed from EMOCA
-https://github.com/radekd91/emoca", and explicitly Copyright 2019 Max-Planck-
-Gesellschaft (MPG), non-commercial research use only, deca@tue.mpg.de) - see
-model/emotion/resnet.py's docstring for the backbone architecture's own license
-chain. The checkpoint (assets/ResNet50/checkpoints/deca-epoch=01-val_loss_total/
-dataloader_idx_0=1.27607644.ckpt) is MPG's own, same non-commercial-research
-status as the FLAME (model/flame/flame.py) and MICA (model/mica/mica.py) assets.
-
-Used purely as a frozen feature extractor to compute L2 emotion-feature distance
-between the UNet's reconstruction and the real photo (Sec 6: "Emotion | L2 between
-pretrained emotion-net features of I' and I"), never itself trained.
-
-Deviations from SMIRK's ExpressionLoss:
-- Only the backbone (feature extractor) is kept - no classification head at all
-  (see model/emotion/resnet.py's docstring), so checkpoint loading here filters
-  the raw .ckpt's `state_dict` down to `backbone.*` keys (stripping that prefix)
-  and drops `backbone.fc.*`/`linear.*` entirely, then loads strict=True - cleaner
-  than SMIRK's own delete-then-strict=False approach, since our module simply
-  doesn't define those unused parameters to begin with.
-- forward() returns the flattened (B, 2048) feature vector directly (SMIRK's
-  ExpressionLoss.forward() calls the backbone then flattens with .view() at the
-  call site every time - moved into this module since nothing else consumes the
-  unflattened shape).
-- Only the 'l2' metric is kept (SMIRK's ExpressionLoss also supports 'l1'/'cos'
-  and a use_mean toggle; the plan's own spec is exactly "L2 between pretrained
-  emotion-net features of I' and I", so the other options aren't used anywhere in
-  this project) - see model/losses/emotion.py.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

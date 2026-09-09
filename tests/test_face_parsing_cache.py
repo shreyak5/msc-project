@@ -145,16 +145,6 @@ def test_success_writes_into_bucket_container(tmp_path):
 
 
 def test_corrupted_bucket_container_is_recomputed_not_crashed(tmp_path, capsys):
-    """Reproduces the real 2026-07-20 SLURM failure (a cached entry that
-    exists on disk but is truncated/corrupted - plausibly a Lustre
-    cross-node rename-visibility race under heavy concurrent access from
-    many DataLoader worker processes, or a leftover from an earlier
-    abruptly-killed job) at the new bucket-container granularity: a whole
-    bucket zip corrupted, not just one frame's file. Used to crash with an
-    unhandled error from np.load - which, in the real multi-GPU job,
-    cascaded into an NCCL collective timeout that killed every other rank
-    once the crashed rank's process never returned. It must still be
-    treated as a cache miss and self-healed, for the entry being requested."""
     cache_root = tmp_path / "face_parsing_cache"
     image = np.zeros((256, 256, 3), dtype=np.uint8)
 
@@ -270,14 +260,6 @@ def test_precomputed_crop_skips_detection_and_writes_cache(tmp_path):
 
 
 def test_precomputed_crop_matches_normal_detection_path(tmp_path):
-    """precomputed_crop is purely a perf shortcut (skip a redundant detector
-    call the caller already ran), not a different computation - the exact
-    (cropped, landmarks, box) a real crop_face_with_landmarks call produces,
-    fed back in as precomputed_crop, must give byte-identical output to
-    letting get_face_parsing detect it itself. Guards specifically against
-    box_crop drifting from the real per-frame detected box (e.g. toward the
-    fixed analytic get_cropped_face_box), which would silently corrupt
-    visibility_ratio without changing the mask itself."""
     from preprocessing.cropping import crop_face_with_landmarks
 
     image = np.zeros((256, 256, 3), dtype=np.uint8)

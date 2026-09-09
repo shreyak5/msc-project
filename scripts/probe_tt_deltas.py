@@ -1,23 +1,3 @@
-"""Diagnostic: how much does TT actually change a frame's decoded FLAME
-params, relative to what SViT+heads alone would have produced (no TT at all)?
-
-Compares two decodings of the SAME (fill-missing-token-patched) per-frame SViT
-tokens from a real, cached clip: "pre-TT" (heads applied directly, TT skipped
-entirely - the counterfactual "what if TT weren't there") vs "post-TT" (the
-same tokens refined by TT first, exactly what encode_video/run_pass_c
-actually does). Prints per-frame jaw/expression param deltas plus per-
-component token deltas (shape/expression/jaw/camera) alongside each frame's
-visibility_ratio, so it's easy to see whether TT's correction actually grows
-at low-visibility (occluded) frames or stays flat regardless of visibility -
-the question this script exists to answer (see stage2-config-reference.md's
-pass_c_identity_pooling/vertex_gate_* entries for the experiments this is
-meant to be re-run against once their checkpoints exist).
-
-Usage:
-    python scripts/probe_tt_deltas.py --checkpoint /path/to/step_XXXXX.pt \
-        --dataset phoenix2014t --tt_variant gated
-"""
-
 from __future__ import annotations
 
 import argparse

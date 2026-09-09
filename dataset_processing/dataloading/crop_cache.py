@@ -35,16 +35,6 @@ def compute_cropped_face(
     scale: float,
     image_size: int,
 ) -> CropResult:
-    """Pure computation - no cache I/O, no sentinel writes, no callbacks.
-    Callers (get_cropped_face below, and prewarm's batched per-bucket loop)
-    translate the returned status into sentinel writes / on_noface / on_error
-    notifications and, on "ok", a bucket container write.
-
-    A source frame that genuinely can't be read (e.g. a corrupted/missing
-    individual frame image) shouldn't crash the whole dataset/training run
-    over one bad file - degrade the same way "no face detected" does, but
-    track it separately (a distinct status) so it stays distinguishable from
-    a legitimate no-face case."""
     try:
         image = load_source_image()
     except Exception as exc:
@@ -75,16 +65,6 @@ def get_cropped_face(
     on_noface: Callable[[], None] | None = None,
     on_error: Callable[[str], None] | None = None,
 ) -> np.ndarray:
-    """Orchestration layer around compute_cropped_face: sentinel check ->
-    bucket-container read (self-healing on a corrupted entry) -> on a true
-    miss, compute (unlocked, so concurrent misses on the same bucket compute
-    in parallel) -> on success, take the bucket's write lock only for the
-    final persist.
-
-    A decode failure on a cached entry (cv2.imdecode returning None) is
-    raised explicitly here rather than silently falling through, so it goes
-    through the same warn-and-recompute path as every other cache's
-    corrupted-entry handling, instead of self-healing invisibly."""
     fallback = np.zeros((image_size, image_size, 3), dtype=np.uint8)
 
     unreadable_path = sentinel_path(cache_root, dataset, sample_id, frame_index, "unreadable")

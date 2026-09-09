@@ -1,30 +1,3 @@
-"""Compute the "visible face region" metric for an image or directory of images:
-
-    A = area of the tight RetinaFace detection box (the expected face region,
-        before the 1.4x crop padding is applied)
-    B = area of the uniface XSeg segmentation mask (the actually-visible,
-        unoccluded face skin)
-    ratio = B / A
-
-A low ratio indicates the visible face region is smaller than the detected
-face box would suggest, i.e. likely occlusion.
-
-A single RetinaFace detection (ibug) on the *original* image drives
-everything: its tight box is what crop_face() scales by 1.4x to build the
-crop, and its 5-point landmarks (otherwise discarded) drive XSeg's alignment
--- verified to match uniface's own RetinaFace 5-point landmarks (~1.5px mean
-difference, 98.5% mask IoU). Both the box and the landmarks are mapped into
-the crop's coordinate space via the same similarity transform used to build
-the crop itself, so there's no second detector call and no dependency on a
-separate landmark model (FAN/MediaPipe) that could fail to find a face on
-severely occluded crops where RetinaFace's own box detection still succeeds.
-
-B is a discrete pixel count of the XSeg mask thresholded at --mask_threshold.
-A is the box area in the same crop pixel coordinate space.
-
-Usage:
-    python scripts/visible_face_ratio.py --input_path <image_or_dir>
-"""
 import argparse
 import json
 import os

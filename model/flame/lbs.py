@@ -1,23 +1,3 @@
-"""Linear Blend Skinning (LBS) math underlying the FLAME model (model/flame.py).
-
-This is standard, well-tested SMPL-family skinning math, reproduced as-is rather
-than modified (implementation-plan.md: "Do not reimplement SMIRK components from
-scratch"). Traced attribution chain: originally from the smplx package (Choutas et
-al., https://github.com/vchoutas/smplx, smplx/lbs.py) - licensed for non-commercial
-scientific research purposes only, proprietary to the Max Planck Institute for
-Intelligent Systems (Max-Planck-Gesellschaft). FLAME_PyTorch (Sanyal et al.,
-https://github.com/soubhiksanyal/FLAME_PyTorch) imports these functions directly
-from the smplx package rather than bundling a copy. SMIRK (src/FLAME/lbs.py)
-inlined a local copy of these same functions (to drop the smplx dependency) plus
-its own eyelid-blendshape addition elsewhere; this file is adapted from SMIRK's copy.
-Use here is non-commercial academic research, consistent with this license.
-
-Excludes the module-level find_dynamic_lmk_idx_and_bcoords: verified (via grep)
-unused anywhere in SMIRK's own codebase - FLAME.py defines and calls its own
-method version instead (which doesn't need the unused `vertices` parameter this
-one takes), so this module-level copy is dead code.
-"""
-
 from __future__ import annotations
 
 import torch
@@ -127,14 +107,6 @@ def lbs(
     lbs_weights: torch.Tensor,
     dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Performs Linear Blend Skinning with the given shape and pose parameters.
-
-    betas: BxNB shape parameters, pose: Bx(J+1)*3 axis-angle pose parameters,
-    v_template: BxVx3 template mesh, shapedirs: Vx3xNB PCA shape displacements,
-    posedirs: Px(V*3) pose PCA coefficients, J_regressor: JxV, parents: J
-    (kinematic tree), lbs_weights: VxJ+1 skinning weights.
-    Returns (verts BxVx3, joints BxJx3).
-    """
     batch_size = max(betas.shape[0], pose.shape[0])
     device = betas.device
 
