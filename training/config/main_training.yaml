@@ -1,0 +1,25 @@
+seed: 42
+learning_rate: 0.00001
+num_steps: 30000
+log_interval_steps: 51
+checkpoint_interval_steps: 1000
+device: cuda
+checkpoint_dir: /projects/u6ga/sk3925_misc/checkpoints/main_training
+stage1_checkpoint_pth: /projects/u6ga/sk3925_misc/checkpoints/pretrain/step_00059999.pt
+resume_optimizer_and_step: false
+dataloader_config_path: dataset_processing/config/dataloader.yaml
+num_expression_params: 50
+pass_pattern: [A, A, B, C]
+pass_b_encoder_steps: 100
+pass_b_unet_steps: 1
+pass_b_joint_steps: 0
+warmup_steps: 1000
+tt_variant: gated
+tt_gamma: 3.0
+landmark_occlusion_masking: true
+expressive_region_smooth_weight: 3.0
+temporal_vertex_smoothness_weight: 40700
+param_smoothness_in_pass_c: true
+temporal_velocity_weight_in_pass_c: 1.0
+mouth_gate_use_region_visibility: false
+pass_c_identity_pooling: true
