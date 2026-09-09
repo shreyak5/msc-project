@@ -82,12 +82,12 @@ def main():
     parser.add_argument('--checkpoint', type=str, default=None,
                          help='Optional trained checkpoint for the selected method; omit to sanity-test '
                               'the untrained model (ignored by --method smirk, which uses its own fixed checkpoint)')
-    parser.add_argument('--kernel_radius', type=int, default=4,
-                         help='--method ours_kernel_smooth only: kernel-smoothing window radius')
-    parser.add_argument('--kernel_sigma', type=float, default=2.0,
-                         help='--method ours_kernel_smooth only: Gaussian kernel std (frames)')
-    parser.add_argument('--kernel_temperature', type=float, default=0.1,
-                         help='--method ours_kernel_smooth only: visibility softmax temperature')
+    # parser.add_argument('--kernel_radius', type=int, default=4,
+    #                      help='--method ours_kernel_smooth only: kernel-smoothing window radius')
+    # parser.add_argument('--kernel_sigma', type=float, default=2.0,
+    #                      help='--method ours_kernel_smooth only: Gaussian kernel std (frames)')
+    # parser.add_argument('--kernel_temperature', type=float, default=0.1,
+    #                      help='--method ours_kernel_smooth only: visibility softmax temperature')
     parser.add_argument('--output_dir', type=str, default='evaluation/output_dataset',
                          help='Directory to save results.csv, skipped_videos.txt and summary.json')
     parser.add_argument('--num_shards', type=int, default=1,
@@ -108,15 +108,12 @@ def main():
     else:
         output_dir = timestamped_out_dir(args.output_dir)
 
-    # ours_kernel_smooth-only kwargs, forwarded into its setup() - every other
-    # method's setup() has a fixed signature (not **kwargs), so this must stay
-    # conditional or it would break them with an unexpected-argument error.
     method_kwargs = None
-    if args.method == 'ours_kernel_smooth':
-        method_kwargs = {
-            'radius': args.kernel_radius, 'sigma': args.kernel_sigma,
-            'temperature': args.kernel_temperature, 'dataset_name': args.dataset_name,
-        }
+    # if args.method == 'ours_kernel_smooth':
+    #     method_kwargs = {
+    #         'radius': args.kernel_radius, 'sigma': args.kernel_sigma,
+    #         'temperature': args.kernel_temperature, 'dataset_name': args.dataset_name,
+    #     }
 
     evaluators = build_evaluators(args.method, args.device, args.crop_size,
                                    crop_scale=args.crop_scale, checkpoint_path=args.checkpoint,

@@ -17,7 +17,7 @@ from utils.inference_utils import (
     load_available_checkpoint,
     peek_num_expression_params,
 )
-from utils.kernel_smoothing import smooth_encoded_params
+# from utils.kernel_smoothing import smooth_encoded_params
 
 
 class OursNoTemporalMethod(ReconstructionMethod):
@@ -117,12 +117,6 @@ class OursFullMethod(OursNoTemporalMethod):
         return results
 
 
-# Raw (no-TT) per-frame FLAME-param encoding cache for OursKernelSmoothMethod - lets a
-# sweep across many (radius, sigma, temperature) settings for the SAME clip run SViT
-# only once (on the first setting's cache miss) instead of once per setting. One file
-# per clip (not per setting, since encoding is setting-independent) - see this
-# project's temporal-smoothing-experiments implementation plan for the file-count/size
-# analysis behind that choice.
 _RAW_ENCODING_CACHE_ROOT = "/lus/lfs1aip2/projects/u6ga/sk3925_datasets/kernel_smooth_encoding_cache"
 _VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm")
 _RAW_ENCODING_PARAM_KEYS = ("shape", "expression", "eyelid", "jaw", "scale", "rotation", "translation")
@@ -186,70 +180,70 @@ def _save_cached_encoding(
     os.replace(tmp_path, path)
 
 
-class OursKernelSmoothMethod(OursNoTemporalMethod):
-    FLAME_CHUNK_SIZE = 32  # same rationale as OursFullMethod
+# class OursKernelSmoothMethod(OursNoTemporalMethod):
+#     FLAME_CHUNK_SIZE = 32  # same rationale as OursFullMethod
 
-    def setup(
-        self, device, crop_size=224, crop_scale=1.4, checkpoint_path=None,
-        radius=4, sigma=2.0, temperature=0.1, dataset_name="inference",
-    ):
-        super().setup(device, crop_size=crop_size, crop_scale=crop_scale, checkpoint_path=checkpoint_path)
-        # Same physical cache root as eval_core.VISIBILITY_CACHE_ROOT/OursFullMethod's
-        # own identical literal - not imported from eval_core.py, since that module
-        # imports this one (circular).
-        self.visibility_cache_root = "/lus/lfs1aip2/projects/u6ga/sk3925_datasets/face_parsing_cache"
-        self.checkpoint_path = checkpoint_path
-        self.dataset_name = dataset_name
-        self.radius = radius
-        self.sigma = sigma
-        self.temperature = temperature
+#     def setup(
+#         self, device, crop_size=224, crop_scale=1.4, checkpoint_path=None,
+#         radius=4, sigma=2.0, temperature=0.1, dataset_name="inference",
+#     ):
+#         super().setup(device, crop_size=crop_size, crop_scale=crop_scale, checkpoint_path=checkpoint_path)
+#         # Same physical cache root as eval_core.VISIBILITY_CACHE_ROOT/OursFullMethod's
+#         # own identical literal - not imported from eval_core.py, since that module
+#         # imports this one (circular).
+#         self.visibility_cache_root = "/lus/lfs1aip2/projects/u6ga/sk3925_datasets/face_parsing_cache"
+#         self.checkpoint_path = checkpoint_path
+#         self.dataset_name = dataset_name
+#         self.radius = radius
+#         self.sigma = sigma
+#         self.temperature = temperature
 
-    @torch.no_grad()
-    def predict_video(self, cropped_bgr_frames, raw_bgr_frames, clip_id):
-        num_frames = len(cropped_bgr_frames)
-        cache_path = _raw_encoding_cache_path(
-            self.checkpoint_path, self.dataset_name, self.crop_size, self.crop_scale, clip_id,
-        )
-        cached = _load_cached_encoding(cache_path, self.device)
+#     @torch.no_grad()
+#     def predict_video(self, cropped_bgr_frames, raw_bgr_frames, clip_id):
+#         num_frames = len(cropped_bgr_frames)
+#         cache_path = _raw_encoding_cache_path(
+#             self.checkpoint_path, self.dataset_name, self.crop_size, self.crop_scale, clip_id,
+#         )
+#         cached = _load_cached_encoding(cache_path, self.device)
 
-        if cached is not None:
-            encoded, visibility_np, _valid_np = cached
-        else:
-            pixel_values_list, visibility_list, valid_list = [], [], []
-            for i, (raw_frame, cropped) in enumerate(zip(raw_bgr_frames, cropped_bgr_frames)):
-                _mask, visibility_ratio, valid = compute_visibility_and_mask(
-                    raw_frame, self.visibility_cache_root, _cache_sample_id(clip_id), i,
-                    self.device, self.device, self.crop_scale, self.crop_size, self.device,
-                    dataset=self.dataset_name,
-                )
-                frame_valid = valid and cropped is not None
-                if frame_valid:
-                    rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                    pixel_values = torch.from_numpy(rgb).permute(2, 0, 1).float().to(self.device) / 255.0
-                else:
-                    # RetinaFace/XSeg failed, or eval_core's own crop failed, for this
-                    # frame - black-frame fallback, matching OursFullMethod's own
-                    # identical convention.
-                    pixel_values = torch.zeros(3, self.crop_size, self.crop_size, device=self.device)
-                pixel_values_list.append(pixel_values)
-                visibility_list.append(visibility_ratio)
-                valid_list.append(frame_valid)
+#         if cached is not None:
+#             encoded, visibility_np, _valid_np = cached
+#         else:
+#             pixel_values_list, visibility_list, valid_list = [], [], []
+#             for i, (raw_frame, cropped) in enumerate(zip(raw_bgr_frames, cropped_bgr_frames)):
+#                 _mask, visibility_ratio, valid = compute_visibility_and_mask(
+#                     raw_frame, self.visibility_cache_root, _cache_sample_id(clip_id), i,
+#                     self.device, self.device, self.crop_scale, self.crop_size, self.device,
+#                     dataset=self.dataset_name,
+#                 )
+#                 frame_valid = valid and cropped is not None
+#                 if frame_valid:
+#                     rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+#                     pixel_values = torch.from_numpy(rgb).permute(2, 0, 1).float().to(self.device) / 255.0
+#                 else:
+#                     # RetinaFace/XSeg failed, or eval_core's own crop failed, for this
+#                     # frame - black-frame fallback, matching OursFullMethod's own
+#                     # identical convention.
+#                     pixel_values = torch.zeros(3, self.crop_size, self.crop_size, device=self.device)
+#                 pixel_values_list.append(pixel_values)
+#                 visibility_list.append(visibility_ratio)
+#                 valid_list.append(frame_valid)
 
-            pixel_values = torch.stack(pixel_values_list, dim=0)  # (N,3,H,W)
-            encoded = encode_image(self.models["svit"], self.models["heads"], pixel_values)
-            visibility_np = np.asarray(visibility_list, dtype=np.float32)
-            valid_np = np.asarray(valid_list, dtype=bool)
-            _save_cached_encoding(cache_path, encoded, visibility_np, valid_np)
+#             pixel_values = torch.stack(pixel_values_list, dim=0)  # (N,3,H,W)
+#             encoded = encode_image(self.models["svit"], self.models["heads"], pixel_values)
+#             visibility_np = np.asarray(visibility_list, dtype=np.float32)
+#             valid_np = np.asarray(valid_list, dtype=bool)
+#             _save_cached_encoding(cache_path, encoded, visibility_np, valid_np)
 
-        smoothed = smooth_encoded_params(encoded, visibility_np, self.radius, self.sigma, self.temperature)
+#         smoothed = smooth_encoded_params(encoded, visibility_np, self.radius, self.sigma, self.temperature)
 
-        results = [None] * num_frames
-        for start in range(0, num_frames, self.FLAME_CHUNK_SIZE):
-            end = min(start + self.FLAME_CHUNK_SIZE, num_frames)
-            chunk = {name: value[start:end] for name, value in smoothed.items()}
-            chunk_preds = decode_and_project(self.models["flame"], chunk, self.crop_size)
-            for j, pred in enumerate(chunk_preds):
-                idx = start + j
-                if cropped_bgr_frames[idx] is not None:
-                    results[idx] = pred
-        return results
+#         results = [None] * num_frames
+#         for start in range(0, num_frames, self.FLAME_CHUNK_SIZE):
+#             end = min(start + self.FLAME_CHUNK_SIZE, num_frames)
+#             chunk = {name: value[start:end] for name, value in smoothed.items()}
+#             chunk_preds = decode_and_project(self.models["flame"], chunk, self.crop_size)
+#             for j, pred in enumerate(chunk_preds):
+#                 idx = start + j
+#                 if cropped_bgr_frames[idx] is not None:
+#                     results[idx] = pred
+#         return results

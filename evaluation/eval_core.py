@@ -15,7 +15,7 @@ from model.losses.landmark import landmark_visibility_mask  # noqa: E402
 import gt_cache
 from metrics import per_frame_euclidean_error, per_frame_euclidean_error_masked, per_frame_vertex_error
 from methods.smirk_method import SmirkMethod
-from methods.ours_method import OursKernelSmoothMethod, OursNoTemporalMethod, OursFullMethod
+# from methods.ours_method import OursKernelSmoothMethod, OursNoTemporalMethod, OursFullMethod
 from methods.pixel3dmm_method import Pixel3dmmMethod
 from methods.emica_method import EmicaMethod
 
@@ -23,7 +23,7 @@ METHOD_REGISTRY = {
     'smirk': SmirkMethod,
     'ours_no_temporal': OursNoTemporalMethod,
     'ours_full': OursFullMethod,
-    'ours_kernel_smooth': OursKernelSmoothMethod,
+    # 'ours_kernel_smooth': OursKernelSmoothMethod,
     'pixel3dmm': Pixel3dmmMethod,
     'emica': EmicaMethod,
 }
