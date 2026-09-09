@@ -1,3 +1,8 @@
+"""Adapted from SMIRK (github.com/georgeretsi/smirk, MIT License, Copyright (c)
+2024 George Retsinas), which borrows EMOCA's ExpressionLoss. The loaded
+checkpoint is EMOCA/DECA's own, Copyright 2019 Max-Planck-Gesellschaft,
+non-commercial research use only."""
+
 from __future__ import annotations
 
 from pathlib import Path

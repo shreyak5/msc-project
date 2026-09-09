@@ -1,3 +1,8 @@
+"""LBS math traced from the smplx package (Choutas et al.,
+github.com/vchoutas/smplx, Max-Planck non-commercial research license) via
+FLAME_PyTorch and SMIRK's own copy (github.com/georgeretsi/smirk). Use here
+is non-commercial academic research."""
+
 from __future__ import annotations
 
 import torch

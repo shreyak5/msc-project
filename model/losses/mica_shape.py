@@ -1,3 +1,7 @@
+"""Adapted from SMIRK's MICA.calculate_mica_shape_loss
+(github.com/georgeretsi/smirk, MIT License, Copyright (c) 2024 George
+Retsinas)."""
+
 from __future__ import annotations
 
 import torch

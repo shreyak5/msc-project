@@ -1,3 +1,8 @@
+"""Adapted from SMIRK (github.com/georgeretsi/smirk, MIT License, Copyright (c)
+2024 George Retsinas), itself adapting Zielon et al.'s MICA
+(github.com/Zielon/MICA). The loaded weights are MICA's own, under a
+non-commercial research license."""
+
 from __future__ import annotations
 
 from pathlib import Path

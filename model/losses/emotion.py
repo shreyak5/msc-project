@@ -1,3 +1,7 @@
+"""Adapted from SMIRK's ExpressionLoss.forward (github.com/georgeretsi/smirk),
+which borrows from EMOCA under Max-Planck-Gesellschaft's non-commercial
+research license (see model/emotion/emotion_net.py)."""
+
 from __future__ import annotations
 
 import torch

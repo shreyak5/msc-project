@@ -1,3 +1,7 @@
+"""Adapted from SMIRK (github.com/georgeretsi/smirk, MIT License, Copyright (c)
+2024 George Retsinas), cross-checked against the SMIRK paper
+(arxiv.org/abs/2404.04104)."""
+
 from __future__ import annotations
 
 import os

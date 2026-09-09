@@ -1,3 +1,7 @@
+"""VGGPerceptualLoss adapted from SMIRK (github.com/georgeretsi/smirk, MIT
+License, Copyright (c) 2024 George Retsinas), which wraps torchvision's
+pretrained VGG16."""
+
 from __future__ import annotations
 
 import torch

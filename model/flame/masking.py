@@ -1,3 +1,6 @@
+"""Adapted from SMIRK (github.com/georgeretsi/smirk, MIT License, Copyright (c)
+2024 George Retsinas)."""
+
 from __future__ import annotations
 
 from pathlib import Path

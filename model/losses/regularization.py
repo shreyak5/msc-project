@@ -1,3 +1,6 @@
+"""Pattern adapted from SMIRK (github.com/georgeretsi/smirk, MIT License,
+Copyright (c) 2024 George Retsinas)."""
+
 from __future__ import annotations
 
 import torch

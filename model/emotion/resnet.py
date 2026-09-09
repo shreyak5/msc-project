@@ -1,3 +1,8 @@
+"""Architecture adapted from EMOCA's ResNet-50 (via SMIRK,
+github.com/georgeretsi/smirk), tracing to cydonia999/VGGFace2-pytorch (MIT
+License). The pretrained checkpoint is EMOCA/DECA's own, Copyright 2019
+Max-Planck-Gesellschaft, non-commercial research use only."""
+
 from __future__ import annotations
 
 import torch

@@ -1,3 +1,8 @@
+"""Base landmark loss adapted from SMIRK (github.com/georgeretsi/smirk, MIT
+License, Copyright (c) 2024 George Retsinas). Eye/lip-closure terms adapted
+from EMOCA (github.com/radekd91/emoca), under the Max Planck Institute's
+non-commercial research license."""
+
 from __future__ import annotations
 
 from pathlib import Path

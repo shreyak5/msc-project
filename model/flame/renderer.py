@@ -1,3 +1,8 @@
+"""Adapted from SMIRK's rasterizer (github.com/georgeretsi/smirk, MIT License,
+Copyright (c) 2024 George Retsinas); face_vertices itself borrowed by SMIRK
+from daniilidis-group/neural_renderer (MIT License, Copyright (c) 2017
+Hiroharu Kato, 2018 Nikos Kolotouros)."""
+
 from __future__ import annotations
 
 import pickle

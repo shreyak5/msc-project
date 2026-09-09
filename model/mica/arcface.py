@@ -1,3 +1,8 @@
+"""Architecture adapted from insightface (deepinsight/insightface, MIT
+License, Copyright (c) 2018 Jiankang Deng and Jia Guo) via SMIRK's copy
+(github.com/georgeretsi/smirk). The loaded weights (MICA's own) are under a
+separate Max-Planck non-commercial research license."""
+
 from __future__ import annotations
 
 import torch

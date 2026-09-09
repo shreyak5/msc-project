@@ -1,3 +1,7 @@
+"""Some transformer-block internals adapted from FaRL-B's ViT-B/16
+(github.com/FacePerceiver/FaRL, MIT License, Copyright (c) Microsoft
+Corporation), for exact compatibility with the official FaRL checkpoint."""
+
 from __future__ import annotations
 
 from collections import OrderedDict

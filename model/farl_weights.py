@@ -1,3 +1,7 @@
+"""Loads the official FaRL-B checkpoint (FaRL-Base-Patch16-LAIONFace20M-ep64.pth)
+from github.com/FacePerceiver/FaRL (Zheng et al., CVPR 2022, MIT License,
+Copyright (c) Microsoft Corporation)."""
+
 from __future__ import annotations
 
 import torch

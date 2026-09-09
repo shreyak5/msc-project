@@ -1,3 +1,9 @@
+"""Adapted from SMIRK (github.com/georgeretsi/smirk, MIT License, Copyright (c)
+2024 George Retsinas), itself adapted from FLAME_PyTorch (Sanyal et al.,
+github.com/soubhiksanyal/FLAME_PyTorch, MIT License). The FLAME model assets
+themselves are licensed by the Max Planck Institute for non-commercial
+research use only."""
+
 from __future__ import annotations
 
 import inspect
