@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional trained checkpoint; omit to sanity-test the untrained model.",
     )
     parser.add_argument(
-        "--tt_variant", type=str, default="original", choices=["original", "simple", "gated"],
+        "--tt_variant", type=str, default="gated", choices=["original", "simple", "gated"],
         help="TemporalTransformer architecture --checkpoint was trained with (training/config.py's "
         "Stage2Config.tt_variant) - must match, since the variants have different parameter shapes "
         "for the 'tt' checkpoint key.",

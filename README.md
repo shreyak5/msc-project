@@ -12,20 +12,6 @@ This work builds on [SMIRK](https://github.com/georgeretsi/smirk) and [TokenFace
 
 The work is also evaluated against the following baselines - [EMICA/inferno](https://github.com/radekd91/inferno/tree/master/inferno_apps/FaceReconstruction), [Pixel3DMM](https://github.com/SimonGiebenhain/pixel3dmm).
 
-<!-- ## Navigating the codebase
-- `assets/` — FLAME model files, landmark embeddings, and other third-party assets required at runtime (gitignored, downloaded/extracted locally).
-- `dataset_processing/` — Dataset config, dataloaders, indexers, and manifest schema used to load and prepare training/eval data.
-- `datasets/` — Notes on the datasets used (see `datasets/README.md`).
-- `evaluation/` — Evaluation pipeline: metrics, landmark extraction, and scripts to run evaluation over datasets/pretrained checkpoints.
-- `inference/` — Demo and inference scripts (images, videos, cycle augmentation, occlusion recovery) for running the trained model.
-- `model/` — Model architecture: encoder, FLAME decoder, heads, temporal module, and emotion/MICA sub-modules.
-- `preprocessing/` — Face cropping and I/O utilities used before frames are fed to the model.
-- `samples/` — Sample video/image data used for demos and manual inspection (e.g. CSL-Daily, How2Sign, Phoenix-2014T).
-- `scripts/` — One-off/utility scripts for cache prewarming, analysis, and dataset migration.
-- `tests/` — Unit and smoke tests for the model, data pipeline, and utilities.
-- `training/` — Training loops and config for pretraining and Stage 2 fine-tuning.
-- `utils/` — Shared helpers (caching, landmark utilities, kernel smoothing, inference utilities). -->
-
 ## Requirements setup
 
 ### 1. Python environment & packages
@@ -48,7 +34,25 @@ model/data assets (FLAME, FaRL, MICA, etc.)
 
 
 ## Demo script
-<!-- Run demo on a video (how2sign) / series of images -->
+- Download the final checkpoints from [here]()
+- Output for the demos will be written under `inference/output/demo/`.
+
+### Demo on the Full Model
+```
+python inference/demo_videos.py --input_path samples/how2sign.mp4 --checkpoint final_checkpoints/full_model.pt
+```
+
+### Demo on the Spatial-Only Model (no temporal transformer)
+```
+python inference/demo_videos.py --input_path samples/how2sign.mp4 --checkpoint final_checkpoints/spatial_only_model.pt --no_tt
+```
+
+### Running on a directory of frames
+Datasets like CSL-Daily and PHOENIX-2014T, have their videos stored as sequence of individual image frames. The demo for such inputs can be run as: 
+```
+python inference/demo_videos.py --input_path samples/csl-daily-sample --image_seq --fps 30 --checkpoint final_checkpoints/full_model.pt
+```
+
 
 ## Training - each phase
 <!-- Point to how to setup the data -->
