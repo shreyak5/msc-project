@@ -34,7 +34,7 @@ model/data assets (FLAME, FaRL, MICA, etc.)
 
 
 ## Demo script
-- Download the final checkpoints from [here]()
+- Download the final checkpoints from [here](https://imperiallondon-my.sharepoint.com/:f:/g/personal/sk3925_ic_ac_uk/IgCspEpLkxl_QoVCSS30AhdaARGzKwiIwf6xiRLVMPd6X0s)
 - Output for the demos will be written under `inference/output/demo/`.
 
 ### Demo on the Full Model
@@ -54,5 +54,15 @@ python inference/demo_videos.py --input_path samples/csl-daily-sample --image_se
 ```
 
 
-## Training - each phase
-<!-- Point to how to setup the data -->
+## Training
+
+### 1. Prepare the datasets
+Download the datasets listed in `datasets/README.md` and run the data preparation / preprocessing steps as explained.
+
+### 2. Pretrain 
+
+    python -m training.pretrain --config training/config/pretrain.yaml
+
+### 3. Main Training
+
+    python -m training.stage2 --config training/config/main_training.yaml
